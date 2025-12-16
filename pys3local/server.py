@@ -248,7 +248,7 @@ def _setup_routes(app: FastAPI) -> None:
     """
 
     @app.get("/")
-    async def list_buckets(request: Request):
+    async def list_buckets(request: Request) -> Response:
         """List all buckets."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider
@@ -268,7 +268,7 @@ def _setup_routes(app: FastAPI) -> None:
             return Response(content=xml, media_type=XML_CONTENT_TYPE, status_code=500)
 
     @app.get("/{path:path}")
-    async def get_handler(request: Request, path: str):
+    async def get_handler(request: Request, path: str) -> Response:
         """Handle GET requests."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider
@@ -341,7 +341,7 @@ def _setup_routes(app: FastAPI) -> None:
             return Response(content=xml, media_type=XML_CONTENT_TYPE, status_code=500)
 
     @app.head("/{path:path}")
-    async def head_handler(request: Request, path: str):
+    async def head_handler(request: Request, path: str) -> Response:
         """Handle HEAD requests."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider
@@ -383,7 +383,7 @@ def _setup_routes(app: FastAPI) -> None:
             return Response(status_code=500)
 
     @app.put("/{path:path}")
-    async def put_handler(request: Request, path: str):
+    async def put_handler(request: Request, path: str) -> Response:
         """Handle PUT requests."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider
@@ -451,7 +451,7 @@ def _setup_routes(app: FastAPI) -> None:
             return Response(content=xml, media_type=XML_CONTENT_TYPE, status_code=500)
 
     @app.delete("/{path:path}")
-    async def delete_handler(request: Request, path: str):
+    async def delete_handler(request: Request, path: str) -> Response:
         """Handle DELETE requests."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider
@@ -471,7 +471,7 @@ def _setup_routes(app: FastAPI) -> None:
 
                 sig = inspect.signature(provider.delete_bucket)
                 if "force" in sig.parameters:
-                    provider.delete_bucket(bucket_name, force=True)
+                    provider.delete_bucket(bucket_name, force=True)  # type: ignore[call-arg]
                 else:
                     provider.delete_bucket(bucket_name)
                 return Response(status_code=204)
@@ -496,7 +496,7 @@ def _setup_routes(app: FastAPI) -> None:
             return Response(content=xml, media_type=XML_CONTENT_TYPE, status_code=500)
 
     @app.post("/{path:path}")
-    async def post_handler(request: Request, path: str):
+    async def post_handler(request: Request, path: str) -> Response:
         """Handle POST requests."""
         await _verify_auth(request)
         provider: StorageProvider = request.app.state.provider

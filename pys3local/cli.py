@@ -227,7 +227,7 @@ def _create_drime_provider(
         Tuple of (DrimeStorageProvider instance, config dict)
     """
     try:
-        from pydrime import DrimeClient  # type: ignore[import-untyped]
+        from pydrime import DrimeClient  # type: ignore[import-not-found]
 
         from pys3local.providers.drime import DrimeStorageProvider
     except ImportError:
@@ -305,7 +305,7 @@ def obscure(password: Optional[str]) -> None:
 
     If PASSWORD is not provided, will prompt for it interactively.
     """
-    from vaultconfig import obscure as obscure_module  # type: ignore[import-untyped]
+    from vaultconfig import obscure as obscure_module  # type: ignore[import-not-found]
 
     if password is None:
         password = click.prompt("Enter password to obscure", hide_input=True)
@@ -796,15 +796,17 @@ def cache_migrate(
     console.print()
 
 
-def _format_size(size_bytes: int) -> str:
+def _format_size(size_bytes: int | None) -> str:
     """Format size in bytes to human-readable format.
 
     Args:
-        size_bytes: Size in bytes
+        size_bytes: Size in bytes (None will be treated as 0)
 
     Returns:
         Human-readable size string
     """
+    if size_bytes is None:
+        return "0 B"
     size: float = float(size_bytes)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size < 1024.0:

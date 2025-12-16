@@ -20,8 +20,8 @@ from pys3local.models import Bucket, S3Object
 from pys3local.provider import StorageProvider
 
 if TYPE_CHECKING:
-    from pydrime.api import DrimeClient  # type: ignore[import-untyped]
-    from pydrime.models import FileEntry  # type: ignore[import-untyped]
+    from pydrime.api import DrimeClient  # type: ignore[import-not-found]
+    from pydrime.models import FileEntry  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,9 @@ class DrimeStorageProvider(StorageProvider):
 
         # Parse ISO format string using pydrime's utility
         try:
-            from pydrime.utils import parse_iso_timestamp
+            from pydrime.utils import (
+                parse_iso_timestamp,  # type: ignore[import-not-found]
+            )
 
             parsed = parse_iso_timestamp(dt_value)
             if parsed is not None:
@@ -218,7 +220,9 @@ class DrimeStorageProvider(StorageProvider):
                         time.sleep(sleep_time)
 
                         # Try to find the folder that was created by another process
-                        from pydrime.models import FileEntriesResult
+                        from pydrime.models import (
+                            FileEntriesResult,  # type: ignore[import-not-found]
+                        )
 
                         params: dict[str, Any] = {
                             "workspace_id": self.workspace_id,
@@ -290,7 +294,7 @@ class DrimeStorageProvider(StorageProvider):
         if folder_path in self._folder_cache:
             return self._folder_cache[folder_path]
 
-        from pydrime.models import FileEntriesResult
+        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
 
         parts = folder_path.split("/")
         # Start from root_folder if set, otherwise workspace root
@@ -358,7 +362,7 @@ class DrimeStorageProvider(StorageProvider):
         Returns:
             FileEntry or None if not found
         """
-        from pydrime.models import FileEntriesResult
+        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
 
         params: dict[str, Any] = {
             "workspace_id": self.workspace_id,
@@ -384,7 +388,9 @@ class DrimeStorageProvider(StorageProvider):
     def list_buckets(self) -> list[Bucket]:
         """List all buckets (top-level folders in workspace or root_folder)."""
         try:
-            from pydrime.models import FileEntriesResult
+            from pydrime.models import (
+                FileEntriesResult,  # type: ignore[import-not-found]
+            )
 
             # Determine parent folder for buckets
             parent_folder_id = self._root_folder_id if self.root_folder else None
@@ -488,7 +494,9 @@ class DrimeStorageProvider(StorageProvider):
             raise PermissionError("Provider is in read-only mode")
 
         try:
-            from pydrime.models import FileEntriesResult
+            from pydrime.models import (
+                FileEntriesResult,  # type: ignore[import-not-found]
+            )
 
             # Get the folder ID
             folder_id = self._get_folder_id_by_path(bucket_name)
@@ -561,7 +569,7 @@ class DrimeStorageProvider(StorageProvider):
         Returns:
             List of tuples (full_key, entry)
         """
-        from pydrime.models import FileEntriesResult
+        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
 
         result_objects: list[tuple[str, FileEntry]] = []
 

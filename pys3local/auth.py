@@ -117,6 +117,11 @@ def verify_signature_v4(
         if not all([credential, signature, signed_headers_str]):
             return False
 
+        # Type narrowing - all values are now non-None
+        assert credential is not None
+        assert signature is not None
+        assert signed_headers_str is not None
+
         # Parse credential
         cred_parts = credential.split("/")
         if len(cred_parts) != 5:
@@ -218,6 +223,12 @@ def verify_presigned_url_v4(
 
         if not all([algorithm, credential, date_str, expires_str, signature]):
             return False
+
+        # Type narrowing - all values are now non-None
+        assert credential is not None
+        assert date_str is not None
+        assert expires_str is not None
+        assert signature is not None
 
         # Check algorithm
         if algorithm != "AWS4-HMAC-SHA256":

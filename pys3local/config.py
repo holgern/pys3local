@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from vaultconfig import (  # type: ignore[import-untyped]
+from vaultconfig import (  # type: ignore[import-not-found]
     ConfigManager,
     create_obscurer_from_hex,
 )
