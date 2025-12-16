@@ -53,6 +53,44 @@ class DrimeStorageProvider(StorageProvider):
 
         logger.info(f"Drime storage initialized (workspace {workspace_id})")
 
+    def _parse_datetime(self, dt_value: datetime | str | None) -> datetime:
+        """Parse datetime value from pydrime (can be datetime or ISO string).
+
+        Args:
+            dt_value: Datetime object, ISO format string, or None
+
+        Returns:
+            Naive datetime object in UTC (for XML template compatibility)
+        """
+        if dt_value is None:
+            return datetime.now(timezone.utc).replace(tzinfo=None)
+
+        if isinstance(dt_value, datetime):
+            # Convert to naive UTC datetime
+            if dt_value.tzinfo is not None:
+                # Convert to UTC and remove timezone info
+                return dt_value.astimezone(timezone.utc).replace(tzinfo=None)
+            # Already naive, assume it's UTC
+            return dt_value
+
+        # Parse ISO format string using pydrime's utility
+        try:
+            from pydrime.utils import parse_iso_timestamp
+
+            parsed = parse_iso_timestamp(dt_value)
+            if parsed is not None:
+                # parse_iso_timestamp returns naive local time
+                # We need to ensure it's in UTC format
+                if parsed.tzinfo is not None:
+                    # Has timezone, convert to UTC and make naive
+                    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                # Already naive, assume it's UTC
+                return parsed
+        except (ValueError, AttributeError, ImportError) as e:
+            logger.warning(f"Failed to parse datetime '{dt_value}': {e}")
+
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
     def _get_folder_id_by_path(
         self, folder_path: str, create: bool = False
     ) -> int | None:
@@ -197,7 +235,7 @@ class DrimeStorageProvider(StorageProvider):
                 # Convert Drime folder to S3 bucket
                 bucket = Bucket(
                     name=entry.name,
-                    creation_date=entry.created_at or datetime.now(timezone.utc),
+                    creation_date=self._parse_datetime(entry.created_at),
                 )
                 buckets.append(bucket)
 
@@ -236,8 +274,21 @@ class DrimeStorageProvider(StorageProvider):
             logger.error(f"Failed to create bucket {bucket_name}: {e}")
             raise
 
-    def delete_bucket(self, bucket_name: str) -> bool:
-        """Delete a bucket (folder)."""
+    def delete_bucket(self, bucket_name: str, force: bool = False) -> bool:
+        """Delete a bucket (top-level folder).
+
+        Args:
+            bucket_name: Name of bucket to delete
+            force: If True, delete bucket even if it contains objects
+                   (Drime-specific: deletes folder with all contents)
+
+        Returns:
+            True if deleted successfully
+
+        Raises:
+            NoSuchBucket: If bucket does not exist
+            BucketNotEmpty: If bucket contains objects and force=False
+        """
         if self.readonly:
             raise PermissionError("Provider is in read-only mode")
 
@@ -250,19 +301,20 @@ class DrimeStorageProvider(StorageProvider):
             if folder_id is None:
                 raise NoSuchBucket(bucket_name)
 
-            # Check if bucket is empty
-            params: dict[str, Any] = {
-                "workspace_id": self.workspace_id,
-                "parent_ids": [folder_id],
-                "per_page": 1,
-            }
-            result = self.client.get_file_entries(**params)
-            file_entries = FileEntriesResult.from_api_response(result)
+            # Check if bucket is empty (unless force=True)
+            if not force:
+                params: dict[str, Any] = {
+                    "workspace_id": self.workspace_id,
+                    "parent_ids": [folder_id],
+                    "per_page": 1,
+                }
+                result = self.client.get_file_entries(**params)
+                file_entries = FileEntriesResult.from_api_response(result)
 
-            if len(file_entries.entries) > 0:
-                raise BucketNotEmpty(bucket_name)
+                if len(file_entries.entries) > 0:
+                    raise BucketNotEmpty(bucket_name)
 
-            # Delete the folder
+            # Delete the folder (Drime API will delete all contents recursively)
             self.client.delete_file_entries([folder_id], workspace_id=self.workspace_id)
 
             # Clear cache
@@ -297,6 +349,63 @@ class DrimeStorageProvider(StorageProvider):
             creation_date=datetime.now(timezone.utc),
         )
 
+    def _collect_all_objects(
+        self, folder_id: int | None, current_path: str = ""
+    ) -> list[tuple[str, FileEntry]]:
+        """Recursively collect all objects with their full paths.
+
+        Args:
+            folder_id: Folder ID to start from (None for root)
+            current_path: Current path prefix
+
+        Returns:
+            List of tuples (full_key, entry)
+        """
+        from pydrime.models import FileEntriesResult
+
+        result_objects: list[tuple[str, FileEntry]] = []
+
+        params: dict[str, Any] = {
+            "workspace_id": self.workspace_id,
+            "per_page": 1000,
+        }
+        if folder_id is not None:
+            params["parent_ids"] = [folder_id]
+
+        logger.debug(
+            f"Collecting objects from folder_id={folder_id}, path={current_path}"
+        )
+        result = self.client.get_file_entries(**params)
+        file_entries = FileEntriesResult.from_api_response(result)
+
+        # Filter to only include immediate children of this folder
+        entries = file_entries.entries
+        if folder_id is None:
+            # Root level - filter for entries with no parent or parent_id=0
+            entries = [e for e in entries if e.parent_id is None or e.parent_id == 0]
+        else:
+            # Filter for entries that are direct children of this folder
+            entries = [e for e in entries if e.parent_id == folder_id]
+
+        logger.debug(f"Found {len(entries)} immediate children")
+
+        for entry in entries:
+            # Build full key
+            if current_path:
+                full_key = f"{current_path}/{entry.name}"
+            else:
+                full_key = entry.name
+
+            if entry.is_folder:
+                # Recursively collect from subfolder
+                subfolder_objects = self._collect_all_objects(entry.id, full_key)
+                result_objects.extend(subfolder_objects)
+            else:
+                # Add file object
+                result_objects.append((full_key, entry))
+
+        return result_objects
+
     def list_objects(
         self,
         bucket_name: str,
@@ -305,76 +414,88 @@ class DrimeStorageProvider(StorageProvider):
         max_keys: int = 1000,
         delimiter: str = "",
     ) -> dict[str, Any]:
-        """List objects in a bucket."""
+        """List objects in a bucket with delimiter support."""
         try:
-            from pydrime.models import FileEntriesResult
-
             # Get bucket folder ID
             folder_id = self._get_folder_id_by_path(bucket_name)
 
             if folder_id is None:
                 raise NoSuchBucket(bucket_name)
 
-            # Get all entries in the bucket recursively
-            params: dict[str, Any] = {
-                "workspace_id": self.workspace_id,
-                "parent_ids": [folder_id],
-                "per_page": 1000,
-            }
+            # Collect all objects recursively with full paths
+            all_objects = self._collect_all_objects(folder_id)
 
-            result = self.client.get_file_entries(**params)
-            file_entries = FileEntriesResult.from_api_response(result)
+            # Extract keys for filtering
+            all_keys = [key for key, _ in all_objects]
 
-            objects = []
-            for entry in file_entries.entries:
-                # Skip folders if no delimiter
-                if entry.is_folder and not delimiter:
-                    continue
+            # Filter by prefix
+            if prefix:
+                all_keys = [k for k in all_keys if k.startswith(prefix)]
 
-                # Get the key (path relative to bucket)
-                key = entry.name
+            # Filter by marker
+            if marker:
+                all_keys = [k for k in all_keys if k > marker]
 
-                # Apply prefix filter
-                if prefix and not key.startswith(prefix):
-                    continue
+            # Sort keys
+            all_keys.sort()
 
-                # Apply marker (for pagination)
-                if marker and key <= marker:
-                    continue
+            # Handle delimiter for common prefixes
+            common_prefixes: set[str] = set()
+            contents_keys = []
 
-                # Convert to S3 object
-                if not entry.is_folder:
+            if delimiter:
+                for key in all_keys:
+                    # Find the position of the delimiter after the prefix
+                    search_start = len(prefix)
+                    delimiter_pos = key.find(delimiter, search_start)
+
+                    if delimiter_pos != -1:
+                        # This key should be in common prefixes
+                        common_prefix = key[: delimiter_pos + len(delimiter)]
+                        common_prefixes.add(common_prefix)
+                    else:
+                        # This key should be in contents
+                        contents_keys.append(key)
+            else:
+                contents_keys = all_keys
+
+            # Apply max_keys limit
+            is_truncated = len(contents_keys) > max_keys
+            if is_truncated:
+                contents_keys = contents_keys[:max_keys]
+                next_marker = contents_keys[-1]
+            else:
+                next_marker = ""
+
+            # Build S3Object instances for contents
+            # Create a lookup dict for quick access
+            objects_dict = {key: entry for key, entry in all_objects}
+
+            contents = []
+            for key in contents_keys:
+                entry = objects_dict.get(key)
+                if entry is not None:
                     obj = S3Object(
                         key=key,
                         size=entry.file_size or 0,
-                        last_modified=entry.updated_at
-                        or entry.created_at
-                        or datetime.now(timezone.utc),
+                        last_modified=self._parse_datetime(
+                            entry.updated_at or entry.created_at
+                        ),
                         etag=entry.hash or "",
                         content_type=entry.mime or "application/octet-stream",
                     )
-                    objects.append(obj)
+                    contents.append(obj)
 
-                # Limit results
-                if len(objects) >= max_keys:
-                    break
-
-            logger.debug(f"Listed {len(objects)} objects in {bucket_name}")
+            logger.debug(
+                f"Listed {len(contents)} objects, "
+                f"{len(common_prefixes)} prefixes in {bucket_name}"
+            )
 
             return {
-                "Contents": [
-                    {
-                        "Key": obj.key,
-                        "Size": obj.size,
-                        "LastModified": obj.last_modified,
-                        "ETag": obj.etag,
-                    }
-                    for obj in objects
-                ],
-                "IsTruncated": len(objects) >= max_keys,
-                "MaxKeys": max_keys,
-                "Name": bucket_name,
-                "Prefix": prefix,
+                "contents": contents,
+                "common_prefixes": sorted(list(common_prefixes)),
+                "is_truncated": is_truncated,
+                "next_marker": next_marker,
             }
 
         except NoSuchBucket:
@@ -483,9 +604,9 @@ class DrimeStorageProvider(StorageProvider):
             return S3Object(
                 key=key,
                 size=file_entry.file_size or len(content),
-                last_modified=file_entry.updated_at
-                or file_entry.created_at
-                or datetime.now(timezone.utc),
+                last_modified=self._parse_datetime(
+                    file_entry.updated_at or file_entry.created_at
+                ),
                 etag=file_entry.hash or "",
                 content_type=file_entry.mime or "application/octet-stream",
                 data=content,
@@ -525,9 +646,9 @@ class DrimeStorageProvider(StorageProvider):
             return S3Object(
                 key=key,
                 size=file_entry.file_size or 0,
-                last_modified=file_entry.updated_at
-                or file_entry.created_at
-                or datetime.now(timezone.utc),
+                last_modified=self._parse_datetime(
+                    file_entry.updated_at or file_entry.created_at
+                ),
                 etag=file_entry.hash or "",
                 content_type=file_entry.mime or "application/octet-stream",
                 metadata={},
