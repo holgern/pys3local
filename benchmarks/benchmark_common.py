@@ -12,7 +12,9 @@ import random
 import signal
 import string
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -236,6 +238,72 @@ def upload_files_to_s3(
         return False, elapsed, error_msg
 
 
+def upload_files_to_s3_parallel(
+    s3_client, bucket_name: str, source_dir: Path, workers: int = 5
+) -> tuple[bool, float, str]:
+    """Upload all files from a directory to S3 in parallel.
+
+    Args:
+        s3_client: Boto3 S3 client
+        bucket_name: Name of bucket to upload to
+        source_dir: Directory containing files to upload
+        workers: Number of parallel workers (default: 5)
+
+    Returns:
+        Tuple of (success, elapsed_time, error_message)
+    """
+    print_step(f"Uploading files to S3 (parallel with {workers} workers)...")
+
+    start_time = time.time()
+
+    try:
+        # Get all files
+        files = list(source_dir.rglob("*"))
+        files = [f for f in files if f.is_file()]
+
+        uploaded = 0
+        upload_lock = threading.Lock()
+
+        def upload_file(file_path: Path) -> bool:
+            """Upload a single file."""
+            nonlocal uploaded
+            try:
+                # Use relative path as S3 key
+                key = str(file_path.relative_to(source_dir))
+                # Normalize path separators for S3
+                key = key.replace("\\", "/")
+
+                with file_path.open("rb") as f:
+                    s3_client.put_object(Bucket=bucket_name, Key=key, Body=f.read())
+
+                with upload_lock:
+                    uploaded += 1
+                    if uploaded % 20 == 0:
+                        print(f"  Uploaded {uploaded}/{len(files)} files...")
+                return True
+            except Exception as e:
+                print(f"  ✗ Failed to upload {file_path.name}: {e}")
+                return False
+
+        # Upload files in parallel
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(upload_file, f) for f in files]
+            results = [f.result() for f in as_completed(futures)]
+
+        if not all(results):
+            raise RuntimeError("Some uploads failed")
+
+        elapsed = time.time() - start_time
+        print(f"  ✓ Uploaded {uploaded} files ({format_time(elapsed)})")
+        return True, elapsed, ""
+
+    except Exception as e:
+        elapsed = time.time() - start_time
+        error_msg = str(e)
+        print(f"  ✗ Upload failed: {error_msg}")
+        return False, elapsed, error_msg
+
+
 def download_files_from_s3(
     s3_client, bucket_name: str, dest_dir: Path
 ) -> tuple[bool, float, str]:
@@ -277,6 +345,78 @@ def download_files_from_s3(
                 downloaded += 1
                 if downloaded % 20 == 0:
                     print(f"  Downloaded {downloaded} files...")
+
+        elapsed = time.time() - start_time
+        print(f"  ✓ Downloaded {downloaded} files ({format_time(elapsed)})")
+        return True, elapsed, ""
+
+    except Exception as e:
+        elapsed = time.time() - start_time
+        error_msg = str(e)
+        print(f"  ✗ Download failed: {error_msg}")
+        return False, elapsed, error_msg
+
+
+def download_files_from_s3_parallel(
+    s3_client, bucket_name: str, dest_dir: Path, workers: int = 5
+) -> tuple[bool, float, str]:
+    """Download all files from S3 bucket to a directory in parallel.
+
+    Args:
+        s3_client: Boto3 S3 client
+        bucket_name: Name of bucket to download from
+        dest_dir: Directory to download files to
+        workers: Number of parallel workers (default: 5)
+
+    Returns:
+        Tuple of (success, elapsed_time, error_message)
+    """
+    print_step(f"Downloading files from S3 (parallel with {workers} workers)...")
+
+    start_time = time.time()
+
+    try:
+        # List all objects first
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket_name)
+
+        keys = []
+        for page in pages:
+            if "Contents" not in page:
+                continue
+            keys.extend([obj["Key"] for obj in page["Contents"]])
+
+        downloaded = 0
+        download_lock = threading.Lock()
+
+        def download_file(key: str) -> bool:
+            """Download a single file."""
+            nonlocal downloaded
+            try:
+                # Create local file path
+                file_path = dest_dir / key
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Download object
+                response = s3_client.get_object(Bucket=bucket_name, Key=key)
+                file_path.write_bytes(response["Body"].read())
+
+                with download_lock:
+                    downloaded += 1
+                    if downloaded % 20 == 0:
+                        print(f"  Downloaded {downloaded}/{len(keys)} files...")
+                return True
+            except Exception as e:
+                print(f"  ✗ Failed to download {key}: {e}")
+                return False
+
+        # Download files in parallel
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(download_file, key) for key in keys]
+            results = [f.result() for f in as_completed(futures)]
+
+        if not all(results):
+            raise RuntimeError("Some downloads failed")
 
         elapsed = time.time() - start_time
         print(f"  ✓ Downloaded {downloaded} files ({format_time(elapsed)})")

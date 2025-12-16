@@ -39,12 +39,14 @@ try:
         create_s3_bucket,
         create_test_files,
         download_files_from_s3,
+        download_files_from_s3_parallel,
         format_bytes,
         print_header,
         print_report,
         print_step,
         stop_server,
         upload_files_to_s3,
+        upload_files_to_s3_parallel,
     )
 except ImportError:
     # Fall back to direct import (when run as script)
@@ -56,12 +58,14 @@ except ImportError:
         create_s3_bucket,
         create_test_files,
         download_files_from_s3,
+        download_files_from_s3_parallel,
         format_bytes,
         print_header,
         print_report,
         print_step,
         stop_server,
         upload_files_to_s3,
+        upload_files_to_s3_parallel,
     )
 
 
@@ -83,6 +87,10 @@ class BenchmarkConfig:
 
     # Bucket settings
     bucket_name: str = "benchmark-bucket"
+
+    # Parallel settings
+    parallel: bool = False
+    parallel_workers: int = 5
 
 
 def start_server(
@@ -226,17 +234,27 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             raise RuntimeError(error_msg)
 
         # Upload files
-        success, upload_time, error = upload_files_to_s3(
-            s3_client, config.bucket_name, source_dir
-        )
+        if config.parallel:
+            success, upload_time, error = upload_files_to_s3_parallel(
+                s3_client, config.bucket_name, source_dir, config.parallel_workers
+            )
+        else:
+            success, upload_time, error = upload_files_to_s3(
+                s3_client, config.bucket_name, source_dir
+            )
         if not success:
             error_msg = f"Upload failed: {error}"
             raise RuntimeError(error_msg)
 
         # Download files
-        success, download_time, error = download_files_from_s3(
-            s3_client, config.bucket_name, download_dir
-        )
+        if config.parallel:
+            success, download_time, error = download_files_from_s3_parallel(
+                s3_client, config.bucket_name, download_dir, config.parallel_workers
+            )
+        else:
+            success, download_time, error = download_files_from_s3(
+                s3_client, config.bucket_name, download_dir
+            )
         if not success:
             error_msg = f"Download failed: {error}"
             raise RuntimeError(error_msg)
@@ -276,6 +294,8 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
                 "Subdirectories": config.num_subdirs,
                 "Server": f"{config.server_host}:{config.server_port}",
                 "Backend": "Local",
+                "Parallel mode": "Enabled" if config.parallel else "Disabled",
+                "Workers": config.parallel_workers if config.parallel else "N/A",
             },
             error=error_msg,
         )
@@ -327,6 +347,18 @@ def main() -> int:
         default=10001,
         help="Server port",
     )
+    parser.add_argument(
+        "--parallel",
+        "-p",
+        action="store_true",
+        help="Enable parallel uploads/downloads",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=5,
+        help="Number of parallel workers",
+    )
 
     args = parser.parse_args()
 
@@ -336,6 +368,8 @@ def main() -> int:
         max_file_size=args.max_size,
         num_subdirs=args.subdirs,
         server_port=args.port,
+        parallel=args.parallel,
+        parallel_workers=args.workers,
     )
 
     result = run_benchmark(config)
