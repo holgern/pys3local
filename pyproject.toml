@@ -23,7 +23,8 @@ dependencies = [
     "rich>=13.0.0",
     "vaultconfig>=0.2.0",
     "defusedxml>=0.7.1",
-    "python-multipart>=0.0.5"
+    "python-multipart>=0.0.5",
+    "httpx",
 ]
 classifiers=[
     'Intended Audience :: Developers',
