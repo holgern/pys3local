@@ -317,9 +317,14 @@ class DrimeStorageProvider(StorageProvider):
             # Delete the folder (Drime API will delete all contents recursively)
             self.client.delete_file_entries([folder_id], workspace_id=self.workspace_id)
 
-            # Clear cache
-            if bucket_name in self._folder_cache:
-                del self._folder_cache[bucket_name]
+            # Clear cache entries for this bucket and all subfolders
+            to_remove = [
+                k
+                for k in self._folder_cache
+                if k == bucket_name or k.startswith(f"{bucket_name}/")
+            ]
+            for k in to_remove:
+                del self._folder_cache[k]
 
             logger.info(f"Deleted bucket: {bucket_name}")
             return True

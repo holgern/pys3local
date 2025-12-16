@@ -380,7 +380,15 @@ def _setup_routes(app: FastAPI) -> None:
         try:
             if not key:
                 # Delete bucket
-                provider.delete_bucket(bucket_name)
+                # For Drime provider, use force=True for fast recursive deletion
+                # Check if delete_bucket accepts force parameter
+                import inspect
+
+                sig = inspect.signature(provider.delete_bucket)
+                if "force" in sig.parameters:
+                    provider.delete_bucket(bucket_name, force=True)
+                else:
+                    provider.delete_bucket(bucket_name)
                 return Response(status_code=204)
 
             # Delete object

@@ -90,6 +90,9 @@ class BenchmarkConfig:
     # Bucket settings
     bucket_name: str = "benchmark-bucket"
 
+    # Debug settings
+    verbose: bool = False
+
 
 def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
     """Start pys3local server with Drime backend in the background.
@@ -117,18 +120,27 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
         "--no-auth",  # Disable auth for benchmark
     ]
 
+    # Add debug flag if verbose mode enabled
+    if config.verbose:
+        cmd.append("--debug")
+
     # Set environment variables for Drime
     env = os.environ.copy()
     env["DRIME_API_KEY"] = config.drime_api_key
     env["DRIME_WORKSPACE_ID"] = str(config.workspace_id)
 
     # Prepare subprocess arguments based on platform
-    log = log_file.open("w")
-    kwargs = {
-        "stdout": log,
-        "stderr": subprocess.STDOUT,
-        "env": env,
-    }
+    kwargs: dict = {"env": env}
+
+    # In verbose mode, show server output directly; otherwise log to file
+    if config.verbose:
+        print("  (Server output will be shown below)")
+        kwargs["stdout"] = None  # Inherit stdout
+        kwargs["stderr"] = None  # Inherit stderr
+    else:
+        log = log_file.open("w")
+        kwargs["stdout"] = log
+        kwargs["stderr"] = subprocess.STDOUT
 
     if hasattr(os, "setsid"):
         # Unix/Linux/macOS
@@ -145,9 +157,9 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
 
     # Check if server is running
     if process.poll() is not None:
-        log.close()
-        with log_file.open() as f:
-            print(f"Server failed to start. Log:\n{f.read()}")
+        if not config.verbose:
+            with log_file.open() as f:
+                print(f"Server failed to start. Log:\n{f.read()}")
         raise RuntimeError("Failed to start pys3local server")
 
     print(f"  ✓ Server started (PID: {process.pid})")
@@ -281,9 +293,14 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
     finally:
         # Cleanup S3 bucket
+        # Note: The pys3local server now automatically uses force=True for
+        # Drime backend, which makes deletion fast (recursive folder delete)
         if s3_client and config.bucket_name:
             try:
-                cleanup_s3_bucket(s3_client, config.bucket_name)
+                print_step(f"Cleaning up S3 bucket '{config.bucket_name}'...")
+                # Just delete the bucket directly - server handles it efficiently for Drime
+                s3_client.delete_bucket(Bucket=config.bucket_name)
+                print(f"  ✓ Bucket '{config.bucket_name}' deleted")
             except Exception as e:
                 print(f"  ⚠ Error cleaning up bucket: {e}")
 
@@ -359,6 +376,12 @@ def main() -> int:
         default=10001,
         help="Server port",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose debug logging (shows detailed API operations and timing)",
+    )
 
     args = parser.parse_args()
 
@@ -373,6 +396,7 @@ def main() -> int:
         server_port=args.port,
         workspace_id=workspace_id,
         drime_api_key=api_key,
+        verbose=args.verbose,
     )
 
     result = run_benchmark(config)
