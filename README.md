@@ -179,6 +179,7 @@ Commands:
   serve    Start the S3-compatible server
   config   Enter an interactive configuration session
   obscure  Obscure a password for use in config files
+  cache    Manage MD5 metadata cache for Drime backend
 ```
 
 ### Server Options
@@ -230,6 +231,107 @@ pys3local serve --backend-config mylocal
 pys3local serve --backend-config mydrime
 ```
 
+## MD5 Cache Management (Drime Backend)
+
+When using the Drime backend, pys3local maintains a local SQLite cache of MD5 hashes to
+ensure S3 compatibility. The cache stores MD5 hashes for uploaded files, since Drime's
+internal hashes are not MD5-compatible.
+
+### Cache Commands
+
+#### View Cache Statistics
+
+```bash
+# Show overall statistics
+pys3local cache stats
+
+# Show statistics for specific workspace
+pys3local cache stats --workspace 1465
+```
+
+Example output:
+
+```
+MD5 Cache Statistics
+
+Overall Statistics:
+  Total files: 63
+  Total size: 30.1 MB
+  Oldest entry: 2025-12-16T16:38:11.801768+00:00
+  Newest entry: 2025-12-16T16:46:57.111257+00:00
+
+Per-Workspace Statistics:
+
+  Workspace 1465:
+    Files: 63
+    Size: 30.1 MB
+    Oldest: 2025-12-16T16:38:11.801768+00:00
+    Newest: 2025-12-16T16:46:57.111257+00:00
+```
+
+#### Clean Cache Entries
+
+```bash
+# Clean all entries for a workspace
+pys3local cache cleanup --workspace 1465
+
+# Clean specific bucket in a workspace
+pys3local cache cleanup --workspace 1465 --bucket my-bucket
+
+# Clean entire cache (with confirmation prompt)
+pys3local cache cleanup --all
+```
+
+#### Optimize Database
+
+```bash
+# Reclaim unused space after deletions
+pys3local cache vacuum
+```
+
+Example output:
+
+```
+Optimizing cache database...
+✓ Database optimized
+  Before: 40.0 KB
+  After: 35.0 KB
+  Saved: 5.0 KB
+```
+
+#### Pre-populate Cache (Migration)
+
+For files uploaded before MD5 caching was implemented, you can pre-populate the cache:
+
+```bash
+# Migrate all files in a backend configuration
+pys3local cache migrate --backend-config mydrime
+
+# Migrate specific bucket
+pys3local cache migrate --backend-config mydrime --bucket my-bucket
+
+# Dry run to see what would be migrated
+pys3local cache migrate --backend-config mydrime --dry-run
+```
+
+### Cache Location
+
+The MD5 cache database is stored at:
+
+- Linux/macOS: `~/.config/pys3local/metadata.db`
+- Windows: `%APPDATA%/pys3local/metadata.db`
+
+### How It Works
+
+1. **On Upload**: When you upload a file through pys3local to Drime, the MD5 hash is
+   calculated and stored in the local cache along with the Drime file ID.
+
+2. **On Download/List**: When S3 clients request file metadata (ETag), pys3local returns
+   the cached MD5 hash, ensuring S3 compatibility.
+
+3. **Fallback**: For files uploaded before caching was implemented, pys3local falls back
+   to using Drime's internal hash with a warning.
+
 ## Storage Backends
 
 ### Local Filesystem
@@ -258,7 +360,32 @@ Features:
 
 ### Drime Cloud
 
-The Drime backend stores data in Drime Cloud storage (implementation in progress).
+The Drime backend stores data in Drime Cloud storage.
+
+Features:
+
+- Full S3 API compatibility through Drime's file API
+- Local MD5 cache for S3 ETag compatibility
+- Support for chunked uploads (AWS SDK v4)
+- Concurrent folder creation with retry logic
+- Workspace isolation
+
+Configuration:
+
+```bash
+# Using environment variables
+export DRIME_API_KEY="your-api-key"
+export DRIME_WORKSPACE_ID="1465"
+pys3local serve --backend drime
+
+# Using saved configuration
+pys3local config  # Add Drime backend
+pys3local serve --backend-config mydrime
+```
+
+The Drime backend automatically manages an MD5 cache at
+`~/.config/pys3local/metadata.db` to ensure S3 compatibility. See the
+[MD5 Cache Management](#md5-cache-management-drime-backend) section for details.
 
 ## Programmatic Usage
 

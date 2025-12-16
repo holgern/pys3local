@@ -5,6 +5,7 @@ This module provides a FastAPI application implementing the AWS S3 API.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import urllib.parse
 from typing import Any
@@ -165,6 +166,78 @@ async def _verify_auth(request: Request) -> bool:
         raise AccessDenied()
 
     return True
+
+
+async def _decode_chunked_stream(request: Request) -> tuple[bytes, str]:
+    """Decode AWS chunked encoded stream.
+
+    AWS SDK v4 uses a specific chunked encoding format:
+    <chunk-size-hex>;chunk-signature=<signature>\\r\\n
+    <chunk-data>\\r\\n
+    0;chunk-signature=<signature>\\r\\n
+    \\r\\n
+
+    Args:
+        request: FastAPI request with chunked body
+
+    Returns:
+        Tuple of (decoded_data, md5_hash)
+
+    Raises:
+        ValueError: If chunk format is invalid
+    """
+    body_stream = request.stream()
+    decoded_data = bytearray()
+    md5_hasher = hashlib.md5()
+
+    try:
+        async for chunk in body_stream:
+            if not chunk:
+                continue
+
+            # Process chunk data
+            data = chunk if isinstance(chunk, bytes) else chunk.encode()
+            idx = 0
+
+            while idx < len(data):
+                # Find the chunk size line (ends with \\r\\n)
+                line_end = data.find(b"\\r\\n", idx)
+                if line_end == -1:
+                    break
+
+                # Parse chunk size
+                size_line = data[idx:line_end].decode("ascii")
+                try:
+                    # Extract hex size (before semicolon)
+                    hex_size = size_line.split(";")[0].strip()
+                    chunk_size = int(hex_size, 16)
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Failed to parse chunk size '{size_line}': {e}")
+                    break
+
+                # Move past the size line
+                idx = line_end + 2  # Skip \\r\\n
+
+                if chunk_size == 0:
+                    # Last chunk
+                    break
+
+                # Extract chunk data
+                chunk_data = data[idx : idx + chunk_size]
+                decoded_data.extend(chunk_data)
+                md5_hasher.update(chunk_data)
+
+                # Move past chunk data and trailing \\r\\n
+                idx += chunk_size + 2
+
+    except Exception as e:
+        logger.error(f"Error decoding chunked stream: {e}")
+        raise ValueError(f"Failed to decode chunked stream: {e}") from e
+
+    md5_hash = md5_hasher.hexdigest()
+    logger.debug(f"Decoded chunked stream: {len(decoded_data)} bytes, MD5: {md5_hash}")
+
+    return bytes(decoded_data), md5_hash
 
 
 def _setup_routes(app: FastAPI) -> None:
@@ -344,12 +417,24 @@ def _setup_routes(app: FastAPI) -> None:
                 )
 
             # Put object
-            body = await request.body()
+            # Check if this is a chunked upload (AWS SDK v4)
+            content_sha256 = request.headers.get("x-amz-content-sha256", "")
+            is_chunked = content_sha256 == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+
+            if is_chunked:
+                logger.debug("Detected AWS chunked upload")
+                body, md5_hash = await _decode_chunked_stream(request)
+            else:
+                body = await request.body()
+                md5_hash = None  # Provider will calculate
+
             content_type = request.headers.get(
                 "content-type", "application/octet-stream"
             )
 
-            obj = provider.put_object(bucket_name, key, body, content_type)
+            obj = provider.put_object(
+                bucket_name, key, body, content_type, md5_hash=md5_hash
+            )
 
             headers = {"ETag": f'"{obj.etag}"'}
 

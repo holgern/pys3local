@@ -31,6 +31,7 @@ def mock_file_entry():
         parent_id: int | None = None,
         file_size: int = 0,
         file_hash: str = "abc123",
+        description: str | None = None,
     ):
         entry = Mock()
         entry.id = entry_id
@@ -42,6 +43,7 @@ def mock_file_entry():
         entry.mime = "application/octet-stream"
         entry.created_at = "2025-01-01T00:00:00Z"
         entry.updated_at = "2025-01-01T00:00:00Z"
+        entry.description = description
         return entry
 
     return _create_entry

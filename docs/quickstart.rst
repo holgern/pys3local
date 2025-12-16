@@ -216,11 +216,31 @@ Make sure the data directory is writable:
    mkdir -p /tmp/s3store
    chmod 755 /tmp/s3store
 
+Using Drime Backend
+-------------------
+
+If you're using the Drime Cloud backend, pys3local automatically manages an MD5 cache:
+
+.. code-block:: bash
+
+   # Configure Drime backend
+   export DRIME_API_KEY="your-api-key"
+   pys3local serve --backend drime
+
+   # View cache statistics
+   pys3local cache stats
+
+   # Clean cache for a workspace
+   pys3local cache cleanup --workspace 1465
+
+See :doc:`cache_management` for complete cache management documentation.
+
 Next Steps
 ----------
 
 - Read the :doc:`index` for complete documentation
 - Check :doc:`installation` for advanced setup
+- Learn about :doc:`cache_management` for Drime backend
 - Review examples in ``tests/test_local_provider.py``
 - Configure for production use with authentication
 - Set up as a systemd service (see :doc:`installation`)

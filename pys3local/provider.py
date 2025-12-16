@@ -119,6 +119,7 @@ class StorageProvider(ABC):
         data: bytes,
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
+        md5_hash: str | None = None,
     ) -> S3Object:
         """Store an object.
 
@@ -128,6 +129,7 @@ class StorageProvider(ABC):
             data: Object data
             content_type: Content type
             metadata: User metadata
+            md5_hash: Pre-calculated MD5 hash (optional, calculated if None)
 
         Returns:
             Created S3Object

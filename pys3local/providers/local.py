@@ -404,6 +404,7 @@ class LocalStorageProvider(StorageProvider):
         data: bytes,
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
+        md5_hash: str | None = None,
     ) -> S3Object:
         """Store an object.
 
@@ -413,6 +414,7 @@ class LocalStorageProvider(StorageProvider):
             data: Object data
             content_type: Content type
             metadata: User metadata
+            md5_hash: Pre-calculated MD5 hash (optional, always recalculated for local)
 
         Returns:
             Created S3Object
@@ -420,13 +422,17 @@ class LocalStorageProvider(StorageProvider):
         Raises:
             NoSuchBucket: If bucket doesn't exist
             InvalidKeyName: If key name is invalid
+
+        Note:
+            The md5_hash parameter is accepted for API consistency but always
+            recalculated from data for local storage to ensure integrity.
         """
         if not self.bucket_exists(bucket_name):
             raise NoSuchBucket(bucket_name)
 
         self._validate_key_name(key)
 
-        # Calculate ETag
+        # Always calculate ETag from data for local storage (ignore md5_hash parameter)
         etag = S3Object.calculate_etag(data)
 
         # Create object

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import tempfile
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from pys3local.errors import (
     NoSuchBucket,
     NoSuchKey,
 )
+from pys3local.metadata_db import MetadataDB
 from pys3local.models import Bucket, S3Object
 from pys3local.provider import StorageProvider
 
@@ -37,6 +39,7 @@ class DrimeStorageProvider(StorageProvider):
         client: DrimeClient,
         workspace_id: int = 0,
         readonly: bool = False,
+        metadata_db: MetadataDB | None = None,
     ):
         """Initialize Drime storage provider.
 
@@ -44,12 +47,18 @@ class DrimeStorageProvider(StorageProvider):
             client: Drime client instance (pydrime.DrimeClient)
             workspace_id: Drime workspace ID (0 for personal workspace)
             readonly: If True, disable write operations
+            metadata_db: MetadataDB instance for MD5 caching (created if None)
         """
         self.client = client
         self.workspace_id = workspace_id
         self.readonly = readonly
         # Cache for folder IDs to reduce API calls
         self._folder_cache: dict[str, int | None] = {}
+
+        # Initialize metadata database for MD5 caching
+        if metadata_db is None:
+            metadata_db = MetadataDB()
+        self.metadata_db = metadata_db
 
         logger.info(f"Drime storage initialized (workspace {workspace_id})")
 
@@ -90,6 +99,143 @@ class DrimeStorageProvider(StorageProvider):
             logger.warning(f"Failed to parse datetime '{dt_value}': {e}")
 
         return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def _get_etag_for_entry(self, entry: FileEntry, bucket_name: str, key: str) -> str:
+        """Get ETag (MD5 hash) for file entry with fallback strategy.
+
+        Priority:
+        1. Check metadata database for cached MD5
+        2. Fallback to entry.hash (with warning, may not be MD5-compatible)
+
+        Args:
+            entry: Drime file entry
+            bucket_name: S3 bucket name
+            key: S3 object key
+
+        Returns:
+            MD5 hash (without quotes)
+
+        Note:
+            Files uploaded before MD5 caching was enabled will use entry.hash
+            as a fallback, which may not be MD5-compatible. These files should
+            be re-uploaded to generate proper MD5 hashes.
+        """
+        # Try metadata database first
+        cached_md5 = self.metadata_db.get_md5(entry.id, self.workspace_id)
+        if cached_md5:
+            logger.debug(f"Using cached MD5 for {bucket_name}/{key}")
+            return cached_md5
+
+        # Fallback to entry.hash (not ideal but prevents breakage for old files)
+        logger.warning(
+            f"No MD5 in cache for {bucket_name}/{key} (file_entry_id={entry.id}), "
+            f"using entry.hash (may not be MD5-compatible). "
+            f"Re-upload this file to generate a proper MD5 hash."
+        )
+        return entry.hash or "unknown"
+
+    def _create_folder_with_retry(
+        self, name: str, parent_id: int | None, max_retries: int = 3
+    ) -> int | None:
+        """Create folder with retry logic for race conditions.
+
+        Args:
+            name: Folder name
+            parent_id: Parent folder ID (None for root)
+            max_retries: Maximum number of retries
+
+        Returns:
+            Folder ID if successful
+
+        Raises:
+            Exception if folder creation fails after all retries
+        """
+        import time
+
+        for attempt in range(max_retries):
+            try:
+                result_data = self.client.create_folder(
+                    name=name, parent_id=parent_id, workspace_id=self.workspace_id
+                )
+                # Extract folder ID from response
+                folder_data: dict[str, Any] = {}
+                if isinstance(result_data, dict):
+                    if "folder" in result_data:
+                        folder_data = result_data["folder"]
+                    elif "fileEntry" in result_data:
+                        folder_data = result_data["fileEntry"]
+                    elif "id" in result_data:
+                        folder_data = result_data
+
+                folder_id = folder_data.get("id")
+                logger.debug(f"Created folder '{name}' with ID {folder_id}")
+                return folder_id
+
+            except Exception as e:
+                error_str = str(e)
+                # Check for 422 error (folder already exists)
+                if "422" in error_str:
+                    logger.warning(
+                        f"Folder '{name}' got 422 (try {attempt + 1}/{max_retries}), "
+                        f"likely race condition. Retrying..."
+                    )
+
+                    # Sleep with exponential backoff
+                    if attempt < max_retries - 1:
+                        sleep_time = 0.1 * (2**attempt)  # 0.1s, 0.2s, 0.4s
+                        time.sleep(sleep_time)
+
+                        # Try to find the folder that was created by another process
+                        from pydrime.models import FileEntriesResult
+
+                        params: dict[str, Any] = {
+                            "workspace_id": self.workspace_id,
+                            "per_page": 1000,
+                        }
+                        if parent_id is not None:
+                            params["parent_ids"] = [parent_id]
+
+                        result = self.client.get_file_entries(**params)
+                        file_entries = FileEntriesResult.from_api_response(result)
+
+                        # Filter for root if no parent
+                        entries = file_entries.entries
+                        if parent_id is None:
+                            entries = [
+                                e
+                                for e in entries
+                                if e.parent_id is None or e.parent_id == 0
+                            ]
+
+                        # Find the folder
+                        for entry in entries:
+                            if entry.name.lower() == name.lower() and entry.is_folder:
+                                logger.info(
+                                    f"Found folder '{name}' after 422 error "
+                                    f"(ID: {entry.id})"
+                                )
+                                return entry.id
+
+                        logger.warning(
+                            f"Could not find folder '{name}' after 422 error "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                    else:
+                        # Max retries exhausted
+                        logger.error(
+                            f"Failed to create or find folder '{name}' "
+                            f"after {max_retries} attempts"
+                        )
+                        raise Exception(
+                            f"Race condition: folder '{name}' failed "
+                            f"after {max_retries} retries"
+                        ) from e
+                else:
+                    # Other error, don't retry
+                    logger.error(f"Failed to create folder '{name}': {e}")
+                    raise
+
+        return None
 
     def _get_folder_id_by_path(
         self, folder_path: str, create: bool = False
@@ -149,23 +295,12 @@ class DrimeStorageProvider(StorageProvider):
 
             if found is None:
                 if create and not self.readonly:
-                    # Create the folder
-                    result_data = self.client.create_folder(
-                        name=part,
-                        parent_id=current_folder_id,
-                        workspace_id=self.workspace_id,
+                    # Create the folder with retry logic
+                    current_folder_id = self._create_folder_with_retry(
+                        part, current_folder_id
                     )
-                    # Extract folder ID from response
-                    folder_data: dict[str, Any] = {}
-                    if isinstance(result_data, dict):
-                        if "folder" in result_data:
-                            folder_data = result_data["folder"]
-                        elif "fileEntry" in result_data:
-                            folder_data = result_data["fileEntry"]
-                        elif "id" in result_data:
-                            folder_data = result_data
-                    current_folder_id = folder_data.get("id")
-                    logger.debug(f"Created folder '{part}' with ID {current_folder_id}")
+                    if current_folder_id is None:
+                        return None
                 else:
                     return None
             else:
@@ -486,7 +621,7 @@ class DrimeStorageProvider(StorageProvider):
                         last_modified=self._parse_datetime(
                             entry.updated_at or entry.created_at
                         ),
-                        etag=entry.hash or "",
+                        etag=self._get_etag_for_entry(entry, bucket_name, key),
                         content_type=entry.mime or "application/octet-stream",
                     )
                     contents.append(obj)
@@ -516,12 +651,33 @@ class DrimeStorageProvider(StorageProvider):
         data: bytes,
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
+        md5_hash: str | None = None,
     ) -> S3Object:
-        """Store an object (upload file)."""
+        """Store an object (upload file).
+
+        Args:
+            bucket_name: Name of bucket
+            key: Object key
+            data: Object data
+            content_type: MIME content type
+            metadata: Custom metadata
+            md5_hash: Pre-calculated MD5 hash (calculated if None)
+
+        Returns:
+            S3Object with metadata
+
+        Raises:
+            NoSuchBucket: If bucket doesn't exist
+            PermissionError: If provider is read-only
+        """
         if self.readonly:
             raise PermissionError("Provider is in read-only mode")
 
         try:
+            # Calculate MD5 if not provided
+            if md5_hash is None:
+                md5_hash = hashlib.md5(data).hexdigest()
+
             # Get bucket folder ID (or create path if nested)
             parts = key.split("/")
             filename = parts[-1]
@@ -552,16 +708,39 @@ class DrimeStorageProvider(StorageProvider):
 
                 logger.info(f"Uploaded object: {bucket_name}/{key}")
 
-                # Extract hash from result
-                file_hash = ""
+                # Extract file entry ID from result
+                file_entry_id = None
                 if isinstance(result, dict):
-                    file_hash = result.get("hash", "")
+                    if "file" in result:
+                        file_entry_id = result["file"].get("id")
+                    elif "fileEntry" in result:
+                        file_entry_id = result["fileEntry"].get("id")
+
+                # Store MD5 in database
+                if file_entry_id:
+                    self.metadata_db.set_md5(
+                        file_entry_id,
+                        self.workspace_id,
+                        md5_hash,
+                        len(data),
+                        bucket_name,
+                        key,
+                    )
+                    logger.debug(
+                        f"Stored MD5 for {bucket_name}/{key}: {md5_hash} "
+                        f"(file_entry_id={file_entry_id})"
+                    )
+                else:
+                    logger.warning(
+                        f"Could not extract file_entry_id from upload result "
+                        f"for {bucket_name}/{key}, MD5 not cached"
+                    )
 
                 return S3Object(
                     key=key,
                     size=len(data),
                     last_modified=datetime.now(timezone.utc),
-                    etag=file_hash,
+                    etag=md5_hash,  # Use calculated MD5
                     content_type=content_type,
                     metadata=metadata or {},
                 )
@@ -612,7 +791,7 @@ class DrimeStorageProvider(StorageProvider):
                 last_modified=self._parse_datetime(
                     file_entry.updated_at or file_entry.created_at
                 ),
-                etag=file_entry.hash or "",
+                etag=self._get_etag_for_entry(file_entry, bucket_name, key),
                 content_type=file_entry.mime or "application/octet-stream",
                 data=content,
                 metadata={},
@@ -654,7 +833,7 @@ class DrimeStorageProvider(StorageProvider):
                 last_modified=self._parse_datetime(
                     file_entry.updated_at or file_entry.created_at
                 ),
-                etag=file_entry.hash or "",
+                etag=self._get_etag_for_entry(file_entry, bucket_name, key),
                 content_type=file_entry.mime or "application/octet-stream",
                 metadata={},
             )
@@ -697,6 +876,9 @@ class DrimeStorageProvider(StorageProvider):
                 [file_entry.id], workspace_id=self.workspace_id
             )
 
+            # Remove from MD5 cache
+            self.metadata_db.remove_md5(file_entry.id, self.workspace_id)
+
             logger.info(f"Deleted object: {bucket_name}/{key}")
             return True
 
@@ -730,7 +912,20 @@ class DrimeStorageProvider(StorageProvider):
         dst_bucket: str,
         dst_key: str,
     ) -> S3Object:
-        """Copy an object."""
+        """Copy an object.
+
+        Args:
+            src_bucket: Source bucket name
+            src_key: Source object key
+            dst_bucket: Destination bucket name
+            dst_key: Destination object key
+
+        Returns:
+            S3Object with destination metadata
+
+        Raises:
+            PermissionError: If provider is read-only
+        """
         if self.readonly:
             raise PermissionError("Provider is in read-only mode")
 
@@ -742,13 +937,14 @@ class DrimeStorageProvider(StorageProvider):
             if src_obj.data is None:
                 raise ValueError("Source object has no data")
 
-            # Put to destination
+            # Put to destination, reusing MD5 from source
             return self.put_object(
                 dst_bucket,
                 dst_key,
                 src_obj.data,
                 src_obj.content_type,
                 src_obj.metadata,
+                md5_hash=src_obj.etag,  # Reuse source MD5
             )
 
         except Exception as e:

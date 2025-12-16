@@ -13,6 +13,7 @@ Welcome to pys3local's documentation!
 
    installation
    quickstart
+   cache_management
    project_summary
 
 Features
