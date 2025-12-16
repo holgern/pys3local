@@ -130,7 +130,8 @@ async def test_decode_chunked_stream_large_chunk():
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="Invalid format currently logs warning instead of raising - graceful degradation"
+    reason="Invalid format currently logs warning instead of raising - "
+    "graceful degradation"
 )
 async def test_decode_chunked_stream_invalid_format():
     """Test decoding with invalid chunk format."""

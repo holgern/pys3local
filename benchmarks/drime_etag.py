@@ -155,7 +155,8 @@ def test_etag_format(s3_client, bucket_name: str) -> tuple[bool, str]:
     if len(parts) != 2:
         return (
             False,
-            f"ETag '{etag}' has wrong format (expected 'hash-size', got {len(parts)} parts)",
+            f"ETag '{etag}' has wrong format "
+            f"(expected 'hash-size', got {len(parts)} parts)",
         )
 
     hash_part, size_part = parts
@@ -330,7 +331,8 @@ def test_etag_consistency(s3_client, bucket_name: str) -> tuple[bool, str]:
         if int(size_part) != len(test_data):
             return (
                 False,
-                f"Size in ETag ({size_part}) doesn't match actual size ({len(test_data)})",
+                f"Size in ETag ({size_part}) doesn't match "
+                f"actual size ({len(test_data)})",
             )
         print(f"  ✓ Size in ETag is correct: {size_part} bytes")
 
@@ -417,7 +419,8 @@ def test_rclone_sync_scenario(s3_client, bucket_name: str) -> tuple[bool, str]:
     if int(size_part) != len(local_file_v2):
         return (
             False,
-            f"Size in ETag ({size_part}) doesn't match file size ({len(local_file_v2)})",
+            f"Size in ETag ({size_part}) doesn't match "
+            f"file size ({len(local_file_v2)})",
         )
 
     print(f"    ✓ ETag format correct: {hash_part[:16]}...-{size_part}")
@@ -485,7 +488,8 @@ def test_boto3_accepts_etag(s3_client, bucket_name: str) -> tuple[bool, str]:
         if size_in_etag != len(original_data):
             return (
                 False,
-                f"Size in ETag ({size_in_etag}) doesn't match actual size ({len(original_data)})",
+                f"Size in ETag ({size_in_etag}) doesn't match "
+                f"actual size ({len(original_data)})",
             )
 
     print("  ✓ boto3 accepts ETags and file operations work correctly")
@@ -539,7 +543,8 @@ def test_list_objects_performance(s3_client, bucket_name: str) -> tuple[bool, st
     if avg_time_per_file > 0.1:
         return (
             False,
-            f"Listing is slow ({avg_time_per_file:.3f}s per file) - may be downloading files for ETags",
+            f"Listing is slow ({avg_time_per_file:.3f}s per file) - "
+            "may be downloading files for ETags",
         )
 
     print("  ✓ Listing is fast - ETags generated without downloads")

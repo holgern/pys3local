@@ -178,8 +178,9 @@ def create_test_files(base_dir: Path, num_files: int = 5) -> dict[str, str]:
 
         filepath.write_text(content)
         file_hashes[filename] = file_hash(filepath)
+        hash_preview = file_hashes[filename][:16]
         print_substep(
-            f"Created {filename} ({len(content)} bytes, hash: {file_hashes[filename][:16]}...)"
+            f"Created {filename} ({len(content)} bytes, hash: {hash_preview}...)"
         )
 
     return file_hashes
@@ -205,8 +206,9 @@ def modify_test_files(base_dir: Path, filenames: list[str]) -> dict[str, str]:
 
         filepath.write_text(content)
         new_hashes[filename] = file_hash(filepath)
+        hash_preview = new_hashes[filename][:16]
         print_substep(
-            f"Modified {filename} ({len(content)} bytes, hash: {new_hashes[filename][:16]}...)"
+            f"Modified {filename} ({len(content)} bytes, hash: {hash_preview}...)"
         )
 
     return new_hashes
@@ -266,9 +268,12 @@ def verify_s3_content(
         actual_hash = hashlib.sha256(content).hexdigest()
 
         if actual_hash != expected_hash:
+            exp_preview = expected_hash[:16]
+            act_preview = actual_hash[:16]
             return (
                 False,
-                f"Content mismatch for {filename}: expected {expected_hash[:16]}..., got {actual_hash[:16]}...",
+                f"Content mismatch for {filename}: "
+                f"expected {exp_preview}..., got {act_preview}...",
             )
 
         print_substep(f"✓ {filename} content verified (hash: {actual_hash[:16]}...)")
@@ -332,7 +337,8 @@ def test_sync_workflow(
         if current_s3_etags[filename] != initial_etags[filename]:
             return (
                 False,
-                f"S3 ETag changed before re-upload for {filename}! (should be unchanged)",
+                f"S3 ETag changed before re-upload for {filename}! "
+                "(should be unchanged)",
             )
 
     print_substep("✓ Remote ETags unchanged (as expected)")
