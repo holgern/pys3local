@@ -97,10 +97,33 @@ pys3local serve --backend drime --no-auth
 
 ### Using with rclone
 
-Configure rclone to use pys3local:
+**Step 1: Start pys3local server**
+
+The server will display the rclone configuration when it starts. Choose one of:
+
+```bash
+# Option A: No authentication (easiest for testing)
+pys3local serve --path /srv/s3 --no-auth
+
+# Option B: With authentication
+pys3local serve --path /srv/s3 --access-key-id mykey --secret-access-key mysecret
+```
+
+**Step 2: Configure rclone**
+
+The server will print the configuration. Copy it to `~/.config/rclone/rclone.conf`:
 
 ```ini
-# ~/.config/rclone/rclone.conf
+# For --no-auth servers (default credentials work)
+[pys3local]
+type = s3
+provider = Other
+access_key_id = test
+secret_access_key = test
+endpoint = http://localhost:10001
+region = us-east-1
+
+# OR for authenticated servers (use your actual credentials)
 [pys3local]
 type = s3
 provider = Other
@@ -110,18 +133,21 @@ endpoint = http://localhost:10001
 region = us-east-1
 ```
 
-Then use it:
+**Step 3: Use rclone**
 
 ```bash
-# Start pys3local server
-pys3local serve --path /srv/s3 --access-key-id mykey --secret-access-key mysecret
+# List buckets
+rclone lsd pys3local:
 
-# Use with rclone
+# Create bucket and upload
 rclone mkdir pys3local:mybucket
 rclone copy /data pys3local:mybucket/backup
 rclone ls pys3local:mybucket
 rclone sync /data pys3local:mybucket/backup
 ```
+
+**Note:** When starting the server, pys3local will print the exact rclone configuration
+you need!
 
 ### Using with duplicati
 
@@ -197,6 +223,7 @@ Options:
   --debug                    Enable debug logging
   --backend [local|drime]    Storage backend (default: local)
   --backend-config TEXT      Backend configuration name
+  --root-folder TEXT         Root folder for Drime backend (e.g., 'backups/s3')
 ```
 
 ## Configuration Management
@@ -222,6 +249,7 @@ path = "/srv/s3data"
 type = "drime"
 api_key = "obscured_key_here"
 workspace_id = 0
+root_folder = "backups/s3"  # Optional: limit S3 scope to this folder
 ```
 
 Use a saved configuration:
@@ -231,11 +259,39 @@ pys3local serve --backend-config mylocal
 pys3local serve --backend-config mydrime
 ```
 
-## MD5 Cache Management (Drime Backend)
+## ETag Implementation (Drime Backend)
 
-When using the Drime backend, pys3local maintains a local SQLite cache of MD5 hashes to
-ensure S3 compatibility. The cache stores MD5 hashes for uploaded files, since Drime's
-internal hashes are not MD5-compatible.
+### How ETags Work
+
+When using the Drime backend, pys3local uses **Drime's native file hash combined with
+file size** as the ETag (Entity Tag). The format is `{hash}-{size}`, similar to AWS
+multipart upload ETags.
+
+**Example ETags:**
+
+- `abc123def456789-1572864` (hash: abc123..., size: 1.5 MB)
+- `xyz789abc123def-512000` (hash: xyz789..., size: 500 KB)
+
+### Why Not MD5?
+
+S3-compatible APIs don't actually require MD5 for ETags. Real-world examples:
+
+- **AWS multipart uploads**: `{hash}-{partcount}` (not pure MD5)
+- **AWS SSE-KMS encryption**: Random string (not MD5)
+- **Filen S3**: File UUID (not MD5)
+- **pys3local Drime**: `{hash}-{size}` (not MD5)
+
+Our approach provides:
+
+- ✅ **Works across multiple PCs** - No local cache synchronization needed
+- ✅ **Detects all changes** - Both content (hash) and size changes
+- ✅ **Fast operations** - No downloads or MD5 calculations required
+- ✅ **rclone compatible** - Tested with rclone, duplicati, restic
+
+### Optional MD5 Cache (Legacy)
+
+For backward compatibility, pys3local still maintains an optional MD5 cache. Files
+uploaded before the hash+size format will use cached MD5 if available.
 
 ### Cache Commands
 
@@ -323,14 +379,165 @@ The MD5 cache database is stored at:
 
 ### How It Works
 
-1. **On Upload**: When you upload a file through pys3local to Drime, the MD5 hash is
-   calculated and stored in the local cache along with the Drime file ID.
+1. **New files**: ETags are generated using `{drime_hash}-{file_size}` format
 
-2. **On Download/List**: When S3 clients request file metadata (ETag), pys3local returns
-   the cached MD5 hash, ensuring S3 compatibility.
+   - No cache needed - works across all PCs immediately
+   - Changes when file content or size changes
+   - Fast - no downloads or calculations needed
 
-3. **Fallback**: For files uploaded before caching was implemented, pys3local falls back
-   to using Drime's internal hash with a warning.
+2. **Legacy files** (uploaded with old MD5 cache system):
+
+   - Uses cached MD5 if available
+   - Otherwise uses new hash+size format
+
+3. **On Upload**: MD5 is calculated and cached for compatibility with tools that expect
+   pure MD5
+
+### Multi-PC Setup
+
+**No configuration needed!** The new hash+size ETag format works automatically across
+multiple PCs. You don't need to migrate or synchronize any cache.
+
+If you have files uploaded with the old MD5 cache system and want pure MD5 ETags, you
+can optionally run:
+
+```bash
+# Only needed for old files uploaded before hash+size format
+pys3local cache migrate --backend-config mydrime
+```
+
+## Troubleshooting
+
+### rclone: "secret_access_key not found"
+
+**Problem:** rclone gives error: `failed to make Fs: secret_access_key not found`
+
+**Solution:** You need to configure rclone with S3 credentials. The server displays the
+correct configuration on startup.
+
+1. Start pys3local (it will show the configuration):
+
+   ```bash
+   pys3local serve --backend drime --no-auth
+   ```
+
+2. Copy the displayed configuration to `~/.config/rclone/rclone.conf`:
+   ```ini
+   [pys3local]
+   type = s3
+   provider = Other
+   access_key_id = test
+   secret_access_key = test
+   endpoint = http://localhost:10001
+   region = us-east-1
+   force_path_style = true
+   disable_http2 = true
+   ```
+
+**Important:** Even with `--no-auth`, rclone still needs credentials configured (use
+`test/test`).
+
+### rclone: "http: server gave HTTP response to HTTPS client"
+
+**Problem:** Error:
+`https response error StatusCode: 0... http: server gave HTTP response to HTTPS client`
+
+**Solution:** rclone is trying to use HTTPS, but pys3local runs on HTTP by default.
+
+Fix your rclone configuration:
+
+```ini
+[pys3local]
+type = s3
+provider = Other
+access_key_id = test
+secret_access_key = test
+endpoint = http://localhost:10001    # Must be http:// not https://
+region = us-east-1
+force_path_style = true
+disable_http2 = true
+no_check_bucket = true
+```
+
+### Server shows wrong credentials
+
+**Problem:** Server started but you don't know the credentials to use with rclone.
+
+**Solution:** pys3local always displays the credentials when starting:
+
+```bash
+$ pys3local serve --backend drime --no-auth
+Authentication disabled
+Note: Clients can use any credentials when auth is disabled
+
+Starting S3 server at http://0.0.0.0:10001/
+
+rclone configuration:
+Add this to ~/.config/rclone/rclone.conf:
+
+[pys3local]
+type = s3
+provider = Other
+access_key_id = test           # <- Use these credentials
+secret_access_key = test       # <-
+endpoint = http://localhost:10001
+region = us-east-1
+```
+
+**Quick test:**
+
+```bash
+# After configuring rclone, test the connection:
+rclone lsd pys3local:
+
+# If it works, you'll see your buckets listed
+```
+
+### Backend config not found
+
+**Problem:** Error: `Backend config 'drime_test' not found`
+
+**Solution:** Create the backend configuration first:
+
+```bash
+# Enter configuration mode
+pys3local config
+
+# Choose "Add backend" and follow prompts
+# Or use environment variables instead:
+export DRIME_API_KEY="your-api-key"
+pys3local serve --backend drime --no-auth
+```
+
+### Complete rclone Configuration Reference
+
+Here's a complete, working rclone configuration with all recommended options:
+
+```ini
+[pys3local]
+type = s3
+provider = Other
+
+# Credentials (use test/test for --no-auth servers)
+access_key_id = test
+secret_access_key = test
+
+# Connection settings
+endpoint = http://localhost:10001
+region = us-east-1
+
+# Important: These options prevent common errors
+force_path_style = true      # Use path-style URLs (required)
+disable_http2 = true          # Disable HTTP/2 (prevents connection issues)
+no_check_bucket = true        # Skip bucket existence checks
+```
+
+**For authenticated servers**, replace credentials:
+
+```ini
+access_key_id = mykey
+secret_access_key = mysecret
+```
 
 ## Storage Backends
 
@@ -365,10 +572,11 @@ The Drime backend stores data in Drime Cloud storage.
 Features:
 
 - Full S3 API compatibility through Drime's file API
-- Local MD5 cache for S3 ETag compatibility
+- Smart ETag generation using native hash + file size (works across multiple PCs)
 - Support for chunked uploads (AWS SDK v4)
 - Concurrent folder creation with retry logic
 - Workspace isolation
+- Optional root folder for scope limiting
 
 Configuration:
 
@@ -383,9 +591,77 @@ pys3local config  # Add Drime backend
 pys3local serve --backend-config mydrime
 ```
 
-The Drime backend automatically manages an MD5 cache at
-`~/.config/pys3local/metadata.db` to ensure S3 compatibility. See the
-[MD5 Cache Management](#md5-cache-management-drime-backend) section for details.
+The Drime backend uses Drime's native file hash combined with file size to generate
+S3-compatible ETags. This works automatically across multiple PCs without any cache
+synchronization. See the [ETag Implementation](#etag-implementation-drime-backend)
+section for details.
+
+#### Root Folder (Scope Limiting)
+
+You can limit the S3 scope to a specific folder within your Drime workspace using the
+`--root-folder` option. This is useful when you want to dedicate a specific folder for
+S3 backups rather than exposing the entire workspace.
+
+**Use Cases:**
+
+- Organize different backup systems in separate folders
+- Share a workspace with other applications while isolating S3 data
+- Create separate environments (dev/staging/prod) within one workspace
+
+**Usage:**
+
+```bash
+# Limit S3 to a specific folder
+pys3local serve --backend drime --root-folder "backups/s3" --no-auth
+
+# With backend configuration
+pys3local serve --backend-config mydrime --root-folder "my-backups"
+```
+
+**How it works:**
+
+- When you specify `--root-folder "backups/s3"`:
+  - `list_buckets()` lists folders in `backups/s3/` instead of workspace root
+  - `create_bucket("mybucket")` creates `backups/s3/mybucket/`
+  - All object paths are relative to `backups/s3/`
+- The root folder is automatically created if it doesn't exist
+- Works with nested paths: `--root-folder "backups/s3/prod"`
+
+**Configuration:**
+
+You can save the root_folder in your backend configuration:
+
+```toml
+[mydrime]
+type = "drime"
+api_key = "obscured_key_here"
+workspace_id = 1465
+root_folder = "backups/s3"
+```
+
+Then use it without the CLI flag:
+
+```bash
+pys3local serve --backend-config mydrime --no-auth
+```
+
+**With rclone:**
+
+```bash
+# Start server with root folder
+pys3local serve --backend drime --root-folder "backups/s3" --no-auth
+
+# rclone will only see buckets within backups/s3/
+rclone lsd pys3local:              # Lists folders in backups/s3/
+rclone mkdir pys3local:mybucket    # Creates backups/s3/mybucket/
+```
+
+**Cache migration with root folder:**
+
+```bash
+# Migrate only files within the root folder
+pys3local cache migrate --backend-config mydrime --root-folder "backups/s3"
+```
 
 ## Programmatic Usage
 

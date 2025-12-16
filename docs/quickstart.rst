@@ -18,7 +18,25 @@ You should see output like::
 
    Data directory: /tmp/s3store
    Authentication disabled
+   Note: Clients can use any credentials when auth is disabled
+
    Starting S3 server at http://0.0.0.0:10001/
+
+   rclone configuration:
+   Add this to ~/.config/rclone/rclone.conf:
+
+   [pys3local]
+   type = s3
+   provider = Other
+   access_key_id = test
+   secret_access_key = test
+   endpoint = http://localhost:10001
+   region = us-east-1
+
+   Press Ctrl+C to stop the server
+
+**Important:** The server shows you the exact configuration needed for rclone!
+Copy the configuration block into your ``~/.config/rclone/rclone.conf`` file.
 
 2. Test with boto3 (Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -232,6 +250,52 @@ If you're using the Drime Cloud backend, pys3local automatically manages an MD5 
 
    # Clean cache for a workspace
    pys3local cache cleanup --workspace 1465
+
+Limiting S3 Scope with Root Folder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can limit S3 operations to a specific folder in your Drime workspace:
+
+.. code-block:: bash
+
+   # Limit S3 to a specific folder
+   pys3local serve --backend drime --root-folder "backups/s3" --no-auth
+
+   # Save root_folder in backend configuration
+   pys3local config
+   # When adding Drime backend, specify root folder: "backups/s3"
+
+   # Use saved configuration
+   pys3local serve --backend-config mydrime --no-auth
+
+**How it works:**
+
+- When you specify ``--root-folder "backups/s3"``:
+
+  - S3 buckets are created as folders within ``backups/s3/``
+  - Listing buckets shows folders in ``backups/s3/`` only
+  - All object operations are relative to ``backups/s3/``
+
+- The root folder is automatically created if it doesn't exist
+- Works with nested paths: ``--root-folder "backups/s3/prod"``
+
+**Use cases:**
+
+- Dedicate a specific folder for S3 backups
+- Share a workspace with other applications
+- Create separate environments (dev/staging/prod)
+
+**Example with rclone:**
+
+.. code-block:: bash
+
+   # Start server with root folder
+   pys3local serve --backend drime --root-folder "backups/rclone" --no-auth
+
+   # In another terminal
+   rclone lsd pys3local:              # Lists folders in backups/rclone/
+   rclone mkdir pys3local:mybucket    # Creates backups/rclone/mybucket/
+   rclone copy /data pys3local:mybucket/
 
 See :doc:`cache_management` for complete cache management documentation.
 

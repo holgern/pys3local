@@ -172,10 +172,10 @@ async def _decode_chunked_stream(request: Request) -> tuple[bytes, str]:
     """Decode AWS chunked encoded stream.
 
     AWS SDK v4 uses a specific chunked encoding format:
-    <chunk-size-hex>;chunk-signature=<signature>\\r\\n
-    <chunk-data>\\r\\n
-    0;chunk-signature=<signature>\\r\\n
-    \\r\\n
+    <chunk-size-hex>;chunk-signature=<signature>\r\n
+    <chunk-data>\r\n
+    0;chunk-signature=<signature>\r\n
+    \r\n
 
     Args:
         request: FastAPI request with chunked body
@@ -200,8 +200,8 @@ async def _decode_chunked_stream(request: Request) -> tuple[bytes, str]:
             idx = 0
 
             while idx < len(data):
-                # Find the chunk size line (ends with \\r\\n)
-                line_end = data.find(b"\\r\\n", idx)
+                # Find the chunk size line (ends with \r\n)
+                line_end = data.find(b"\r\n", idx)
                 if line_end == -1:
                     break
 
@@ -216,7 +216,7 @@ async def _decode_chunked_stream(request: Request) -> tuple[bytes, str]:
                     break
 
                 # Move past the size line
-                idx = line_end + 2  # Skip \\r\\n
+                idx = line_end + 2  # Skip \r\n
 
                 if chunk_size == 0:
                     # Last chunk

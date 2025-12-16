@@ -40,6 +40,7 @@ class DrimeStorageProvider(StorageProvider):
         workspace_id: int = 0,
         readonly: bool = False,
         metadata_db: MetadataDB | None = None,
+        root_folder: str | None = None,
     ):
         """Initialize Drime storage provider.
 
@@ -48,10 +49,16 @@ class DrimeStorageProvider(StorageProvider):
             workspace_id: Drime workspace ID (0 for personal workspace)
             readonly: If True, disable write operations
             metadata_db: MetadataDB instance for MD5 caching (created if None)
+            root_folder: Optional folder path in Drime to use as root
+                        (e.g., "backups" or "backups/s3"). If specified, all
+                        S3 buckets will be created within this folder instead
+                        of at the workspace root.
         """
         self.client = client
         self.workspace_id = workspace_id
         self.readonly = readonly
+        self.root_folder = root_folder
+        self._root_folder_id: int | None = None
         # Cache for folder IDs to reduce API calls
         self._folder_cache: dict[str, int | None] = {}
 
@@ -60,7 +67,21 @@ class DrimeStorageProvider(StorageProvider):
             metadata_db = MetadataDB()
         self.metadata_db = metadata_db
 
-        logger.info(f"Drime storage initialized (workspace {workspace_id})")
+        # Initialize root folder if specified
+        if root_folder:
+            self._root_folder_id = self._get_folder_id_by_path(root_folder)
+            if self._root_folder_id is None and not readonly:
+                # Create the root folder structure if it doesn't exist
+                logger.info(f"Creating root folder: {root_folder}")
+                self._root_folder_id = self._get_folder_id_by_path(
+                    root_folder, create=True
+                )
+            logger.info(
+                f"Drime storage initialized (workspace {workspace_id}, "
+                f"root_folder: {root_folder})"
+            )
+        else:
+            logger.info(f"Drime storage initialized (workspace {workspace_id})")
 
     def _parse_datetime(self, dt_value: datetime | str | None) -> datetime:
         """Parse datetime value from pydrime (can be datetime or ISO string).
@@ -101,11 +122,27 @@ class DrimeStorageProvider(StorageProvider):
         return datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _get_etag_for_entry(self, entry: FileEntry, bucket_name: str, key: str) -> str:
-        """Get ETag (MD5 hash) for file entry with fallback strategy.
+        """Get ETag for file entry.
 
-        Priority:
-        1. Check metadata database for cached MD5
-        2. Fallback to entry.hash (with warning, may not be MD5-compatible)
+        Returns an S3-compatible ETag using Drime's native hash and file size.
+        Format: {hash}-{size} (similar to AWS multipart upload ETags).
+
+        ETags in S3-compatible APIs don't need to be MD5 - they just need to be:
+        1. Unique per file content
+        2. Consistent for the same file
+        3. Change when file changes
+
+        Examples of non-MD5 ETags in real S3 implementations:
+        - AWS multipart uploads: "d41d8cd98f00b204e9800998ecf8427e-5"
+        - AWS SSE-KMS encrypted: random string
+        - Filen S3: file UUID
+        - Drime (this implementation): "{hash}-{size}"
+
+        This approach:
+        - Works across multiple PCs (no cache needed)
+        - Detects changes in both content (hash) and size
+        - No downloads or MD5 calculations required
+        - Compatible with rclone, duplicati, restic, etc.
 
         Args:
             entry: Drime file entry
@@ -113,26 +150,24 @@ class DrimeStorageProvider(StorageProvider):
             key: S3 object key
 
         Returns:
-            MD5 hash (without quotes)
-
-        Note:
-            Files uploaded before MD5 caching was enabled will use entry.hash
-            as a fallback, which may not be MD5-compatible. These files should
-            be re-uploaded to generate proper MD5 hashes.
+            ETag string in format "{hash}-{size}" (without quotes)
         """
-        # Try metadata database first
-        cached_md5 = self.metadata_db.get_md5(entry.id, self.workspace_id)
-        if cached_md5:
-            logger.debug(f"Using cached MD5 for {bucket_name}/{key}")
-            return cached_md5
+        # Try metadata database first (for files uploaded with MD5 caching)
+        # This maintains backward compatibility with existing cached MD5s
+        if self.metadata_db:
+            cached_md5 = self.metadata_db.get_md5(entry.id, self.workspace_id)
+            if cached_md5:
+                logger.debug(f"Using cached MD5 for {bucket_name}/{key}")
+                return cached_md5
 
-        # Fallback to entry.hash (not ideal but prevents breakage for old files)
-        logger.warning(
-            f"No MD5 in cache for {bucket_name}/{key} (file_entry_id={entry.id}), "
-            f"using entry.hash (may not be MD5-compatible). "
-            f"Re-upload this file to generate a proper MD5 hash."
-        )
-        return entry.hash or "unknown"
+        # Use Drime's native hash combined with file size
+        # This provides a unique, stable identifier that changes when file changes
+        file_hash = entry.hash or str(entry.id)
+        file_size = entry.file_size or 0
+        etag = f"{file_hash}-{file_size}"
+
+        logger.debug(f"Using Drime hash+size ETag for {bucket_name}/{key}: {etag}")
+        return etag
 
     def _create_folder_with_retry(
         self, name: str, parent_id: int | None, max_retries: int = 3
@@ -244,13 +279,15 @@ class DrimeStorageProvider(StorageProvider):
 
         Args:
             folder_path: Path like "bucket/subfolder" (without leading slash)
+                        Path is relative to root_folder if set
             create: If True, create missing folders
 
         Returns:
-            Folder ID or None for root
+            Folder ID or None for workspace root (when root_folder is not set)
         """
         if not folder_path:
-            return None
+            # If root_folder is set, return its ID, otherwise workspace root
+            return self._root_folder_id if self.root_folder else None
 
         # Check cache first
         if folder_path in self._folder_cache:
@@ -259,7 +296,10 @@ class DrimeStorageProvider(StorageProvider):
         from pydrime.models import FileEntriesResult
 
         parts = folder_path.split("/")
-        current_folder_id: int | None = None
+        # Start from root_folder if set, otherwise workspace root
+        current_folder_id: int | None = (
+            self._root_folder_id if self.root_folder else None
+        )
 
         for i, part in enumerate(parts):
             # Check cache for partial path
@@ -345,11 +385,14 @@ class DrimeStorageProvider(StorageProvider):
         return None
 
     def list_buckets(self) -> list[Bucket]:
-        """List all buckets (top-level folders in workspace)."""
+        """List all buckets (top-level folders in workspace or root_folder)."""
         try:
             from pydrime.models import FileEntriesResult
 
-            # Get top-level folders
+            # Determine parent folder for buckets
+            parent_folder_id = self._root_folder_id if self.root_folder else None
+
+            # Get folders at the appropriate level
             params: dict[str, Any] = {
                 "workspace_id": self.workspace_id,
                 "per_page": 1000,
@@ -358,12 +401,21 @@ class DrimeStorageProvider(StorageProvider):
             result = self.client.get_file_entries(**params)
             file_entries = FileEntriesResult.from_api_response(result)
 
-            # Filter for root folders only
-            entries = [
-                e
-                for e in file_entries.entries
-                if (e.parent_id is None or e.parent_id == 0) and e.is_folder
-            ]
+            # Filter for folders at the correct level
+            if parent_folder_id is not None:
+                # List folders within root_folder
+                entries = [
+                    e
+                    for e in file_entries.entries
+                    if e.parent_id == parent_folder_id and e.is_folder
+                ]
+            else:
+                # List folders at workspace root
+                entries = [
+                    e
+                    for e in file_entries.entries
+                    if (e.parent_id is None or e.parent_id == 0) and e.is_folder
+                ]
 
             buckets = []
             for entry in entries:
@@ -374,7 +426,12 @@ class DrimeStorageProvider(StorageProvider):
                 )
                 buckets.append(bucket)
 
-            logger.debug(f"Listed {len(buckets)} buckets")
+            if self.root_folder:
+                logger.debug(
+                    f"Listed {len(buckets)} buckets in root_folder '{self.root_folder}'"
+                )
+            else:
+                logger.debug(f"Listed {len(buckets)} buckets")
             return buckets
 
         except Exception as e:
@@ -391,12 +448,18 @@ class DrimeStorageProvider(StorageProvider):
             if self.bucket_exists(bucket_name):
                 raise BucketAlreadyExists(bucket_name)
 
-            # Create top-level folder
+            # Create folder at appropriate level
+            parent_id = self._root_folder_id if self.root_folder else None
             self.client.create_folder(
-                name=bucket_name, parent_id=None, workspace_id=self.workspace_id
+                name=bucket_name, parent_id=parent_id, workspace_id=self.workspace_id
             )
 
-            logger.info(f"Created bucket: {bucket_name}")
+            if self.root_folder:
+                logger.info(
+                    f"Created bucket: {bucket_name} in root_folder '{self.root_folder}'"
+                )
+            else:
+                logger.info(f"Created bucket: {bucket_name}")
 
             return Bucket(
                 name=bucket_name,

@@ -200,12 +200,12 @@ Download/List Flow
     # Simplified lookup process
     entry = drime_client.get_file(file_id)
     md5_hash = metadata_db.get_md5(entry.id)
-    
+
     if md5_hash is None:
         # Fallback for old files
         logger.warning(f"No MD5 cache for {entry.name}")
         md5_hash = entry.hash  # Not actually MD5!
-    
+
     return S3Object(etag=md5_hash, ...)
 
 Chunked Upload Support

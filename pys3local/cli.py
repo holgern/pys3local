@@ -81,6 +81,11 @@ def cli(ctx: click.Context) -> None:
     default=None,
     help="Backend configuration name (from ~/.config/pys3local/backends.toml)",
 )
+@click.option(
+    "--root-folder",
+    default=None,
+    help="Root folder path for Drime backend (e.g., 'backups/s3')",
+)
 def serve(
     path: str,
     listen: str,
@@ -91,6 +96,7 @@ def serve(
     debug: bool,
     backend: str,
     backend_config: Optional[str],
+    root_folder: Optional[str],
 ) -> None:
     """Start the S3-compatible server."""
 
@@ -112,11 +118,15 @@ def serve(
         provider = LocalStorageProvider(base_path=Path(path), readonly=False)
 
     elif backend == "drime":
-        provider, config_info = _create_drime_provider(backend_config, False)
+        provider, config_info = _create_drime_provider(
+            backend_config, False, root_folder
+        )
         console.print("Storage backend: Drime Cloud")
         console.print(f"Workspace ID: {config_info.get('workspace_id', 0)}")
         if backend_config:
             console.print(f"Configuration: {backend_config}")
+        if root_folder:
+            console.print(f"Root Folder: {root_folder}")
     else:
         console.print(f"[red]Unknown backend: {backend}[/red]")
         sys.exit(1)
@@ -135,11 +145,15 @@ def serve(
 
     # Display authentication status
     if no_auth:
-        console.print("Authentication disabled")
+        console.print("[yellow]Authentication disabled[/yellow]")
+        console.print(
+            "[dim]Note: Clients can use any credentials when auth is disabled[/dim]"
+        )
     else:
-        console.print("Authentication enabled")
-        console.print(f"Access Key ID: {access_key_id}")
-        console.print(f"Region: {region}")
+        console.print("[green]Authentication enabled[/green]")
+        console.print(f"Access Key ID: [cyan]{access_key_id}[/cyan]")
+        console.print(f"Secret Access Key: [cyan]{secret_access_key}[/cyan]")
+        console.print(f"Region: [cyan]{region}[/cyan]")
 
     # Create and run server
     from pys3local.server import create_s3_app
@@ -153,7 +167,39 @@ def serve(
             no_auth=no_auth,
         )
 
-        console.print(f"\n[green]Starting S3 server at http://{host}:{port}/[/green]\n")
+        console.print(f"\n[green]Starting S3 server at http://{host}:{port}/[/green]")
+
+        # Show rclone configuration example
+        if not no_auth:
+            console.print("\n[bold]rclone configuration:[/bold]")
+            console.print("[dim]Add this to ~/.config/rclone/rclone.conf:[/dim]")
+            console.print()
+            console.print("[pys3local]")
+            console.print("type = s3")
+            console.print("provider = Other")
+            console.print(f"access_key_id = {access_key_id}")
+            console.print(f"secret_access_key = {secret_access_key}")
+            console.print(
+                f"endpoint = http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
+            )
+            console.print(f"region = {region}")
+            console.print()
+        else:
+            console.print("\n[bold]rclone configuration:[/bold]")
+            console.print("[dim]Add this to ~/.config/rclone/rclone.conf:[/dim]")
+            console.print()
+            console.print("[pys3local]")
+            console.print("type = s3")
+            console.print("provider = Other")
+            console.print("access_key_id = test")
+            console.print("secret_access_key = test")
+            console.print(
+                f"endpoint = http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
+            )
+            console.print(f"region = {region}")
+            console.print()
+
+        console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
         uvicorn.run(
             app, host=host, port=port, log_level="error" if not debug else "debug"
@@ -166,13 +212,16 @@ def serve(
 
 
 def _create_drime_provider(
-    backend_config_name: Optional[str], readonly: bool
+    backend_config_name: Optional[str],
+    readonly: bool,
+    root_folder: Optional[str] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Create a Drime storage provider.
 
     Args:
         backend_config_name: Name of backend config to use
         readonly: Whether to enable readonly mode
+        root_folder: Optional root folder path in Drime
 
     Returns:
         Tuple of (DrimeStorageProvider instance, config dict)
@@ -237,10 +286,14 @@ def _create_drime_provider(
             console.print("Or use --backend-config to specify a backend config.")
             sys.exit(1)
 
+    # Get root_folder from CLI parameter or backend config
+    effective_root_folder = root_folder or config.get("root_folder")
+
     provider = DrimeStorageProvider(
         client=client,
         workspace_id=config.get("workspace_id", 0),
         readonly=readonly,
+        root_folder=effective_root_folder,
     )
     return provider, config
 
@@ -320,8 +373,15 @@ def config() -> None:
                 workspace_id = click.prompt(
                     "Workspace ID (0 for personal)", type=int, default=0
                 )
+                root_folder = click.prompt(
+                    "Root folder (optional - limit S3 scope to specific folder)",
+                    default="",
+                    show_default=False,
+                )
                 config_data["api_key"] = api_key
                 config_data["workspace_id"] = workspace_id
+                if root_folder:
+                    config_data["root_folder"] = root_folder
 
             config_manager.add_backend(name, backend_type, config_data)
             console.print(f"\n[green]✓[/green] Backend '{name}' added successfully\n")
@@ -584,6 +644,12 @@ def cache_vacuum() -> None:
     help="Migrate specific bucket (requires workspace)",
 )
 @click.option(
+    "--root-folder",
+    type=str,
+    default=None,
+    help="Limit scope to specific folder in workspace (e.g., 'backups/s3')",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would be migrated without actually doing it",
@@ -592,6 +658,7 @@ def cache_migrate(
     backend_config: str,
     workspace: Optional[int],
     bucket: Optional[str],
+    root_folder: Optional[str],
     dry_run: bool,
 ) -> None:
     """Pre-populate MD5 cache by downloading files from Drime.
@@ -608,7 +675,9 @@ def cache_migrate(
     from pys3local.metadata_db import MetadataDB
 
     # Create Drime provider
-    provider, config_info = _create_drime_provider(backend_config, readonly=True)
+    provider, config_info = _create_drime_provider(
+        backend_config, readonly=True, root_folder=root_folder
+    )
 
     # Get workspace ID
     if workspace is None:
