@@ -1,7 +1,6 @@
 """Tests for server functionality including chunked uploads."""
 
 import hashlib
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient

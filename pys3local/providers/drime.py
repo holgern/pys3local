@@ -152,16 +152,13 @@ class DrimeStorageProvider(StorageProvider):
         Returns:
             ETag string in format "{hash}-{size}" (without quotes)
         """
-        # Try metadata database first (for files uploaded with MD5 caching)
-        # This maintains backward compatibility with existing cached MD5s
-        if self.metadata_db:
-            cached_md5 = self.metadata_db.get_md5(entry.id, self.workspace_id)
-            if cached_md5:
-                logger.debug(f"Using cached MD5 for {bucket_name}/{key}")
-                return cached_md5
+        # Always use Drime's native hash combined with file size
+        # This provides a consistent, stable identifier that:
+        # - Works across multiple PCs (no local cache needed)
+        # - Changes when file content changes (Drime updates hash)
+        # - Is S3-compatible (similar to AWS multipart/Filen format)
+        # - Doesn't require MD5 calculation or caching
 
-        # Use Drime's native hash combined with file size
-        # This provides a unique, stable identifier that changes when file changes
         file_hash = entry.hash or str(entry.id)
         file_size = entry.file_size or 0
         etag = f"{file_hash}-{file_size}"
@@ -771,39 +768,30 @@ class DrimeStorageProvider(StorageProvider):
 
                 logger.info(f"Uploaded object: {bucket_name}/{key}")
 
-                # Extract file entry ID from result
+                # Extract file entry ID and hash from result
                 file_entry_id = None
+                file_hash = None
                 if isinstance(result, dict):
                     if "file" in result:
                         file_entry_id = result["file"].get("id")
+                        file_hash = result["file"].get("hash")
                     elif "fileEntry" in result:
                         file_entry_id = result["fileEntry"].get("id")
+                        file_hash = result["fileEntry"].get("hash")
 
-                # Store MD5 in database
-                if file_entry_id:
-                    self.metadata_db.set_md5(
-                        file_entry_id,
-                        self.workspace_id,
-                        md5_hash,
-                        len(data),
-                        bucket_name,
-                        key,
-                    )
-                    logger.debug(
-                        f"Stored MD5 for {bucket_name}/{key}: {md5_hash} "
-                        f"(file_entry_id={file_entry_id})"
-                    )
-                else:
-                    logger.warning(
-                        f"Could not extract file_entry_id from upload result "
-                        f"for {bucket_name}/{key}, MD5 not cached"
-                    )
+                # Use hash-size format for ETag (don't cache MD5)
+                # This ensures consistency across multiple PCs and API calls
+                if not file_hash:
+                    file_hash = str(file_entry_id or 0)
+
+                etag = f"{file_hash}-{len(data)}"
+                logger.debug(f"Generated ETag for {bucket_name}/{key}: {etag}")
 
                 return S3Object(
                     key=key,
                     size=len(data),
                     last_modified=datetime.now(timezone.utc),
-                    etag=md5_hash,  # Use calculated MD5
+                    etag=etag,  # Use hash-size format
                     content_type=content_type,
                     metadata=metadata or {},
                 )

@@ -117,6 +117,174 @@ python -m benchmarks.drime_s3_benchmark \
   --max-size 1048576
 ```
 
+### sync_workflow_test.py
+
+**CRITICAL TEST:** Validates rclone-like sync workflow with ETag-based change detection.
+
+This test simulates the complete workflow that rclone uses to sync files:
+
+1. Initial sync - upload files to S3
+2. Modify files locally (simulate user editing files)
+3. Re-sync - rclone checks ETags to detect changes
+4. Verify files are re-uploaded with new content
+5. Confirm ETags changed (if not, rclone would skip upload = DATA LOSS!)
+
+**Why This Test Matters:**
+
+rclone relies on ETags to determine if a file needs re-uploading:
+
+- If `local_etag == remote_etag` → Skip (already synced)
+- If `local_etag != remote_etag` → Upload (changed)
+
+If ETags don't change when file content changes, rclone will not detect the changes and
+will skip uploading the modified files. This causes **data loss** - your remote storage
+will have old file versions.
+
+**What It Tests:**
+
+1. **Initial Sync**: Upload files, get initial ETags
+2. **Local Modification**: Change file content (different hashes)
+3. **Change Detection**: Verify ETags are still unchanged in S3 (before re-upload)
+4. **Re-Upload**: Upload modified files
+5. **ETag Change Verification**: Confirm ETags changed (CRITICAL!)
+6. **Content Verification**: Verify correct content in S3
+
+**Requirements:**
+
+- boto3 must be installed (`pip install boto3`)
+- pys3local must be installed
+- For Drime backend: Valid Drime API credentials
+
+**Usage:**
+
+```bash
+# Test local backend only (fast, no credentials needed)
+python -m benchmarks.sync_workflow_test --backend local --files 5
+
+# Test Drime backend only (requires credentials)
+python -m benchmarks.sync_workflow_test --backend drime --files 5
+
+# Test both backends
+python -m benchmarks.sync_workflow_test --backend both --files 10
+```
+
+**Options:**
+
+- `--backend {local,drime,both}`: Backend to test (default: local)
+- `--files N`: Number of test files (default: 5)
+
+**Example Output:**
+
+```
+======================================================================
+  PHASE 1: Initial Sync
+======================================================================
+
+→ Creating 5 test files in /tmp/pys3local_sync_test_xxx/local_files...
+  • Created file00.txt (42 bytes, hash: a1b2c3d4e5f6...)
+  • Created file01.txt (84 bytes, hash: f6e5d4c3b2a1...)
+  ...
+
+→ Syncing 5 files to S3 bucket 'sync-test-1234567890'...
+  • Uploaded file00.txt → ETag: abc123def456-42
+  • Uploaded file01.txt → ETag: 456def789abc-84
+  ...
+
+======================================================================
+  PHASE 2: Modify Local Files
+======================================================================
+
+→ Modifying 5 test files...
+  • Modified file00.txt (64 bytes, hash: 9876543210fe...)
+  ...
+
+======================================================================
+  PHASE 3: Re-Sync (Detect Changes)
+======================================================================
+
+→ Checking if rclone would detect changes (ETag comparison)...
+  • file00.txt: remote ETag = abc123def456-42
+  ...
+
+→ Uploading modified files...
+  • Uploaded file00.txt → ETag: fedcba987654-64
+  ...
+
+======================================================================
+  PHASE 4: Verify ETag Change Detection
+======================================================================
+
+  ✓ file00.txt ETag changed: abc123def456-42 → fedcba987654-64
+  ✓ file01.txt ETag changed: 456def789abc-84 → 123abc456def-128
+  ...
+  ✓ All ETags changed correctly
+
+======================================================================
+  PHASE 5: Verify Modified Content
+======================================================================
+
+→ Verifying S3 content matches expected hashes...
+  ✓ file00.txt content verified (hash: 9876543210fe...)
+  ...
+  ✓ All modified files have correct content in S3
+
+======================================================================
+  TEST RESULTS
+======================================================================
+
+✓ PASS: Local Backend
+  Complete sync workflow test PASSED
+
+======================================================================
+  FINAL RESULT
+======================================================================
+
+✓ ALL TESTS PASSED
+
+The sync workflow works correctly!
+Files are properly detected as changed via ETags.
+rclone sync would work correctly with this backend.
+```
+
+**Failure Scenarios:**
+
+If ETags don't change when files change, you'll see:
+
+```
+======================================================================
+  PHASE 4: Verify ETag Change Detection
+======================================================================
+
+  ✗ CRITICAL: file00.txt ETag unchanged! (abc123def456-42)
+    This means rclone would SKIP this file (DATA LOSS!)
+
+✗ FAIL: Local Backend
+  CRITICAL: Some ETags didn't change! rclone would not detect changes.
+```
+
+This indicates a **critical bug** in the ETag implementation that would cause data loss
+with rclone sync.
+
+### test_drime_etag.py
+
+Comprehensive ETag format validation for Drime backend (uses hash+size format).
+
+Tests the new `{hash}-{size}` ETag format:
+
+1. Verifies format is correct
+2. Tests change detection (same size, different content)
+3. Tests consistency (same file = same ETag)
+4. Simulates rclone sync scenario
+5. Confirms boto3 compatibility
+6. Validates listing performance (no downloads)
+
+**Usage:**
+
+```bash
+python -m benchmarks.test_drime_etag
+# You'll be prompted for Drime credentials
+```
+
 ## Benchmark Methodology
 
 ### Test Data Generation
