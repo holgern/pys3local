@@ -11,9 +11,6 @@ This script:
 7. Compares both directories
 8. Generates a performance report
 9. Cleans up all test data
-
-NOTE: This is currently a stub implementation. The Drime backend support
-is not yet implemented in pys3local.
 """
 
 from __future__ import annotations

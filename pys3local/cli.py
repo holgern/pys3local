@@ -237,7 +237,11 @@ def _create_drime_provider(
             console.print("Or use --backend-config to specify a backend config.")
             sys.exit(1)
 
-    provider = DrimeStorageProvider(client=client, readonly=readonly)
+    provider = DrimeStorageProvider(
+        client=client,
+        workspace_id=config.get("workspace_id", 0),
+        readonly=readonly,
+    )
     return provider, config
 
 
