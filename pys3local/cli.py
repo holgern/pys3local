@@ -4,7 +4,7 @@ import logging
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import click
 import uvicorn
@@ -796,7 +796,7 @@ def cache_migrate(
     console.print()
 
 
-def _format_size(size_bytes: int | None) -> str:
+def _format_size(size_bytes: Union[int, str, None]) -> str:
     """Format size in bytes to human-readable format.
 
     Args:
@@ -807,7 +807,9 @@ def _format_size(size_bytes: int | None) -> str:
     """
     if size_bytes is None:
         return "0 B"
-    size: float = float(size_bytes)
+    # Convert to int first (handles both int and str)
+    size_int = int(size_bytes) if isinstance(size_bytes, str) else size_bytes
+    size: float = float(size_int)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size < 1024.0:
             return f"{size:.1f} {unit}"

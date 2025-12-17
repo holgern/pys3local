@@ -88,14 +88,14 @@ def _parse_path(path: str, host: str, hostname: str) -> tuple[str | None, str | 
     # Virtual host style: bucket.hostname
     if host != hostname and hostname in host:
         idx = host.index(hostname)
-        bucket_name = host[: idx - 1]
-        key = urllib.parse.unquote(path.strip("/")) or None
-        return bucket_name, key
+        bucket_name_vhost: str | None = host[: idx - 1]
+        key_vhost: str | None = urllib.parse.unquote(path.strip("/")) or None
+        return bucket_name_vhost, key_vhost
 
     # Path style: /bucket/key
     parts = path.strip("/").split("/", 1)
-    bucket_name = urllib.parse.unquote(parts[0]) if parts[0] else None
-    key = urllib.parse.unquote(parts[1]) if len(parts) > 1 else None
+    bucket_name: str | None = urllib.parse.unquote(parts[0]) if parts[0] else None
+    key: str | None = urllib.parse.unquote(parts[1]) if len(parts) > 1 else None
 
     return bucket_name, key
 

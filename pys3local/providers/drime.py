@@ -7,7 +7,7 @@ import logging
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pys3local.errors import (
     BucketAlreadyExists,
@@ -105,19 +105,20 @@ class DrimeStorageProvider(StorageProvider):
 
         # Parse ISO format string using pydrime's utility
         try:
-            from pydrime.utils import (
-                parse_iso_timestamp,  # type: ignore[import-not-found]
+            from pydrime.utils import (  # type: ignore[import-not-found]
+                parse_iso_timestamp,
             )
 
             parsed = parse_iso_timestamp(dt_value)
             if parsed is not None:
                 # parse_iso_timestamp returns naive local time
                 # We need to ensure it's in UTC format
-                if parsed.tzinfo is not None:
+                parsed_dt = cast(datetime, parsed)
+                if parsed_dt.tzinfo is not None:
                     # Has timezone, convert to UTC and make naive
-                    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                    return parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
                 # Already naive, assume it's UTC
-                return parsed
+                return parsed_dt
         except (ValueError, AttributeError, ImportError) as e:
             logger.warning(f"Failed to parse datetime '{dt_value}': {e}")
 
@@ -221,7 +222,7 @@ class DrimeStorageProvider(StorageProvider):
 
                         # Try to find the folder that was created by another process
                         from pydrime.models import (
-                            FileEntriesResult,  # type: ignore[import-not-found]
+                            FileEntriesResult,
                         )
 
                         params: dict[str, Any] = {
@@ -250,7 +251,7 @@ class DrimeStorageProvider(StorageProvider):
                                     f"Found folder '{name}' after 422 error "
                                     f"(ID: {entry.id})"
                                 )
-                                return entry.id
+                                return cast(int, entry.id)
 
                         logger.warning(
                             f"Could not find folder '{name}' after 422 error "
@@ -294,7 +295,7 @@ class DrimeStorageProvider(StorageProvider):
         if folder_path in self._folder_cache:
             return self._folder_cache[folder_path]
 
-        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
+        from pydrime.models import FileEntriesResult
 
         parts = folder_path.split("/")
         # Start from root_folder if set, otherwise workspace root
@@ -362,7 +363,7 @@ class DrimeStorageProvider(StorageProvider):
         Returns:
             FileEntry or None if not found
         """
-        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
+        from pydrime.models import FileEntriesResult
 
         params: dict[str, Any] = {
             "workspace_id": self.workspace_id,
@@ -389,7 +390,7 @@ class DrimeStorageProvider(StorageProvider):
         """List all buckets (top-level folders in workspace or root_folder)."""
         try:
             from pydrime.models import (
-                FileEntriesResult,  # type: ignore[import-not-found]
+                FileEntriesResult,
             )
 
             # Determine parent folder for buckets
@@ -495,7 +496,7 @@ class DrimeStorageProvider(StorageProvider):
 
         try:
             from pydrime.models import (
-                FileEntriesResult,  # type: ignore[import-not-found]
+                FileEntriesResult,
             )
 
             # Get the folder ID
@@ -569,7 +570,7 @@ class DrimeStorageProvider(StorageProvider):
         Returns:
             List of tuples (full_key, entry)
         """
-        from pydrime.models import FileEntriesResult  # type: ignore[import-not-found]
+        from pydrime.models import FileEntriesResult
 
         result_objects: list[tuple[str, FileEntry]] = []
 
