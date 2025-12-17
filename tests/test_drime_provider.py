@@ -5,6 +5,7 @@ For integration tests with real API, run benchmarks/drime_s3_benchmark.py
 """
 
 from datetime import datetime
+from typing import Optional
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -28,10 +29,10 @@ def mock_file_entry():
         name: str,
         is_folder: bool = False,
         entry_id: int = 1,
-        parent_id: int | None = None,
+        parent_id: Optional[int] = None,
         file_size: int = 0,
         file_hash: str = "abc123",
-        description: str | None = None,
+        description: Optional[str] = None,
     ):
         entry = Mock()
         entry.id = entry_id
