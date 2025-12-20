@@ -119,7 +119,9 @@ def verify_signature_v4(
 
         if not all([credential, signature, signed_headers_str]):
             logger.debug(
-                f"SigV4: Missing auth parts - Credential: {bool(credential)}, Signature: {bool(signature)}, SignedHeaders: {bool(signed_headers_str)}"
+                f"SigV4: Missing auth parts - Credential: {bool(credential)}, "
+                f"Signature: {bool(signature)}, "
+                f"SignedHeaders: {bool(signed_headers_str)}"
             )
             return False
 
