@@ -13,6 +13,7 @@ jobs:
       run: |
         pip install coverage click pytest pytest-cov
         pip install -e .
+        pip install -r requirements-test.txt
         pytest --cov --junitxml=junit.xml 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
