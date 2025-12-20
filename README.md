@@ -409,6 +409,48 @@ pys3local cache migrate --backend-config mydrime
 
 ## Troubleshooting
 
+### rclone: "Invalid HTTP request received"
+
+**Problem:** Server shows `Invalid HTTP request received` error when using rclone.
+
+**Solution:** pys3local uses the `h11` HTTP backend for better compatibility with S3
+clients like rclone. This is configured automatically.
+
+If you still get errors:
+
+1. **Update your installation** to get the latest uvicorn with h11 support:
+
+   ```bash
+   pip install --upgrade 'uvicorn[standard]'
+   ```
+
+2. **Check your rclone config** (`~/.config/rclone/rclone.conf`):
+
+   ```ini
+   [pys3local]
+   type = s3
+   provider = Other
+   access_key_id = test
+   secret_access_key = test
+   endpoint = http://localhost:8000
+   region = us-east-1
+   force_path_style = true
+   ```
+
+3. **Run with debug mode** to see detailed logs:
+
+   ```bash
+   pys3local serve --debug
+   rclone -vv lsd pys3local:
+   ```
+
+4. **Try signature v2** if v4 auth has issues (add to rclone config):
+   ```ini
+   v2_auth = true
+   ```
+
+See `tests/test_rclone_compatibility.md` for more detailed troubleshooting.
+
 ### rclone: "secret_access_key not found"
 
 **Problem:** rclone gives error: `failed to make Fs: secret_access_key not found`

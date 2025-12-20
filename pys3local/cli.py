@@ -201,8 +201,17 @@ def serve(
 
         console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
+        # Configure uvicorn for better compatibility with S3 clients like rclone
+        # Use h11 backend explicitly for better HTTP/1.1 compliance
         uvicorn.run(
-            app, host=host, port=port, log_level="error" if not debug else "debug"
+            app,
+            host=host,
+            port=port,
+            log_level="error" if not debug else "debug",
+            http="h11",  # Use h11 for better HTTP/1.1 compatibility
+            server_header=False,  # Don't send Server header
+            timeout_keep_alive=75,  # Standard keep-alive timeout
+            access_log=debug,  # Only show access log in debug mode
         )
 
     except Exception as e:

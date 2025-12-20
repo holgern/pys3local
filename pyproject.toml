@@ -19,7 +19,7 @@ urls = { Homepage = "https://github.com/holgern/pys3local" }
 dependencies = [
     "click>=8.0.0",
     "fastapi>=0.68.0",
-    "uvicorn>=0.15.0",
+    "uvicorn[standard]>=0.15.0",
     "rich>=13.0.0",
     "vaultconfig>=0.2.0",
     "defusedxml>=0.7.1",
