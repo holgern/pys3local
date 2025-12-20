@@ -3,12 +3,14 @@
 ## Changes Made
 
 ### 1. Updated uvicorn configuration for better HTTP/1.1 compatibility
+
 - Explicitly use `h11` backend instead of default `httptools`
 - Disabled Server header (some clients have issues with this)
 - Set standard keep-alive timeout (75 seconds)
 - Only show access logs in debug mode
 
 ### 2. Added uvicorn[standard] dependency
+
 - Includes `httptools`, `uvloop`, `websockets` for better performance
 - Provides multiple HTTP backends for compatibility
 
@@ -86,11 +88,13 @@ pys3local serve --path /tmp/s3store --debug
 ### Issue: "Invalid HTTP request received"
 
 **Causes:**
+
 1. Incompatible HTTP backend (httptools vs h11)
 2. Malformed request headers
 3. HTTP/2 upgrade attempts
 
 **Solutions:**
+
 - ✅ Now using `h11` backend explicitly (more lenient with protocol violations)
 - ✅ Disabled Server header
 - ✅ Standard keep-alive timeout
@@ -98,11 +102,13 @@ pys3local serve --path /tmp/s3store --debug
 ### Issue: "SignatureDoesNotMatch" or "AccessDenied"
 
 **Causes:**
+
 1. Mismatched credentials
 2. Wrong signature version
 3. Missing required headers
 
 **Solutions:**
+
 1. Verify access_key_id and secret_access_key match
 2. Ensure rclone config has matching credentials
 3. Use `--debug` on server to see auth details
@@ -111,20 +117,24 @@ pys3local serve --path /tmp/s3store --debug
 ### Issue: "NoSuchBucket" errors
 
 **Causes:**
+
 1. Virtual-host style URLs not properly configured
 2. Bucket name in wrong place
 
 **Solutions:**
+
 1. Set `force_path_style = true` in rclone config
 2. Use path-style URLs: `http://localhost:8000/bucket/key`
 
 ### Issue: Slow performance
 
 **Causes:**
+
 1. Not using uvicorn[standard] with optimized backends
 2. Too many keep-alive connections
 
 **Solutions:**
+
 1. Install: `pip install uvicorn[standard]`
 2. This provides uvloop and httptools for better performance
 
@@ -133,11 +143,13 @@ pys3local serve --path /tmp/s3store --debug
 ### HTTP Backend Selection
 
 **httptools (default):**
+
 - Faster, written in C
 - Stricter HTTP parsing
 - May reject some edge-case requests
 
 **h11 (now default for pys3local):**
+
 - Pure Python
 - More lenient parsing
 - Better compatibility with diverse S3 clients
@@ -146,6 +158,7 @@ pys3local serve --path /tmp/s3store --debug
 ### Why h11 works better
 
 rclone and other S3 clients may:
+
 - Send headers in non-standard order
 - Use HTTP/1.1 pipelining
 - Send Expect: 100-continue headers
@@ -169,12 +182,14 @@ And rclone commands should work without "Invalid HTTP request" errors.
 If you still encounter issues:
 
 1. **Capture the error details:**
+
    ```bash
    pys3local serve --debug 2>&1 | tee server.log
    rclone -vv lsd pys3local: 2>&1 | tee rclone.log
    ```
 
 2. **Share the logs** showing:
+
    - Exact error message
    - Request headers (from debug output)
    - rclone version: `rclone version`
