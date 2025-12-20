@@ -1,6 +1,17 @@
 Cache Management
 ================
 
+.. warning::
+   This documentation is outdated and describes the legacy MD5 caching system for the
+   Drime backend. As of recent versions, the cache system has been repurposed for the
+   **local storage backend** to store object metadata in SQLite instead of individual
+   JSON files. The cache commands now use ``--bucket`` instead of ``--workspace``.
+
+   For current usage, see the README.md file or run ``pys3local cache --help``.
+
+Legacy Documentation (Drime Backend)
+-------------------------------------
+
 When using the Drime Cloud backend, pys3local maintains a local SQLite cache of MD5
 hashes to ensure full S3 compatibility. This is necessary because Drime's internal
 file hashes are not MD5-based, while S3 clients expect ETags to be MD5 hashes for

@@ -15,7 +15,6 @@ from pys3local.errors import (
     NoSuchBucket,
     NoSuchKey,
 )
-from pys3local.metadata_db import MetadataDB
 from pys3local.models import Bucket, S3Object
 from pys3local.provider import StorageProvider
 
@@ -39,7 +38,6 @@ class DrimeStorageProvider(StorageProvider):
         client: DrimeClient,
         workspace_id: int = 0,
         readonly: bool = False,
-        metadata_db: MetadataDB | None = None,
         root_folder: str | None = None,
     ):
         """Initialize Drime storage provider.
@@ -48,7 +46,6 @@ class DrimeStorageProvider(StorageProvider):
             client: Drime client instance (pydrime.DrimeClient)
             workspace_id: Drime workspace ID (0 for personal workspace)
             readonly: If True, disable write operations
-            metadata_db: MetadataDB instance for MD5 caching (created if None)
             root_folder: Optional folder path in Drime to use as root
                         (e.g., "backups" or "backups/s3"). If specified, all
                         S3 buckets will be created within this folder instead
@@ -61,11 +58,6 @@ class DrimeStorageProvider(StorageProvider):
         self._root_folder_id: int | None = None
         # Cache for folder IDs to reduce API calls
         self._folder_cache: dict[str, int | None] = {}
-
-        # Initialize metadata database for MD5 caching
-        if metadata_db is None:
-            metadata_db = MetadataDB()
-        self.metadata_db = metadata_db
 
         # Initialize root folder if specified
         if root_folder:
@@ -935,9 +927,6 @@ class DrimeStorageProvider(StorageProvider):
             self.client.delete_file_entries(
                 [file_entry.id], workspace_id=self.workspace_id
             )
-
-            # Remove from MD5 cache
-            self.metadata_db.remove_md5(file_entry.id, self.workspace_id)
 
             logger.info(f"Deleted object: {bucket_name}/{key}")
             return True

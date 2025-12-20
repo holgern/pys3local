@@ -1,7 +1,8 @@
-"""SQLite-based metadata storage for Drime file entries.
+"""SQLite-based metadata storage for S3 objects.
 
-This module provides persistent storage for MD5 hashes and other metadata
-that cannot be reliably stored in the Drime API (e.g., entry.hash is not MD5).
+This module provides persistent storage for S3 object metadata:
+- Local provider: Complete S3 object metadata (replaces JSON files)
+- Drime provider: MD5 hashes (legacy, no longer actively used)
 """
 
 from __future__ import annotations
@@ -11,22 +12,45 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+class LocalObjectMetadata(TypedDict):
+    """Type definition for local object metadata."""
+
+    bucket_name: str
+    object_key: str
+    size: int
+    etag: str
+    last_modified: datetime
+    content_type: str
+    metadata: dict[str, str]
+    storage_class: str
+
 
 logger = logging.getLogger(__name__)
 
 
 class MetadataDB:
-    """SQLite-based metadata storage for Drime file entries.
+    """SQLite-based metadata storage for S3 objects.
 
-    This database stores MD5 hashes and other metadata for files stored in Drime.
-    The database is shared across all workspaces, with workspace_id providing isolation.
+    This database stores metadata for S3 objects from different providers.
 
     Schema:
-        drime_files:
+        local_objects: (Used by LocalStorageProvider)
+            - bucket_name: S3 bucket name
+            - object_key: S3 object key
+            - size: File size in bytes
+            - etag: S3 ETag (MD5 hash)
+            - last_modified: Last modification timestamp
+            - content_type: MIME content type
+            - metadata: JSON string of user metadata
+            - storage_class: Storage class (e.g., STANDARD)
+
+        drime_files: (Legacy, no longer actively used)
             - file_entry_id: Drime's internal file ID (unique)
             - workspace_id: Drime workspace ID
             - md5_hash: MD5 hash of file content
@@ -59,6 +83,26 @@ class MetadataDB:
 
         with self._get_connection() as conn:
             conn.executescript("""
+                -- Local storage objects table
+                CREATE TABLE IF NOT EXISTS local_objects (
+                    id INTEGER PRIMARY KEY,
+                    bucket_name TEXT NOT NULL,
+                    object_key TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    etag TEXT NOT NULL,
+                    last_modified TIMESTAMP NOT NULL,
+                    content_type TEXT NOT NULL,
+                    metadata TEXT,
+                    storage_class TEXT DEFAULT 'STANDARD',
+                    UNIQUE (bucket_name, object_key)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_local_bucket_key
+                    ON local_objects(bucket_name, object_key);
+                CREATE INDEX IF NOT EXISTS idx_local_bucket
+                    ON local_objects(bucket_name);
+
+                -- Drime files table (legacy, no longer actively used)
                 CREATE TABLE IF NOT EXISTS drime_files (
                     id INTEGER PRIMARY KEY,
                     file_entry_id INTEGER UNIQUE NOT NULL,
@@ -313,3 +357,226 @@ class MetadataDB:
         with self._get_connection() as conn:
             conn.execute("VACUUM")
         logger.info("Database vacuumed successfully")
+
+    # =========================================================================
+    # Local storage methods
+    # =========================================================================
+
+    def set_local_object(
+        self,
+        bucket_name: str,
+        object_key: str,
+        size: int,
+        etag: str,
+        last_modified: datetime,
+        content_type: str,
+        metadata: dict[str, str] | None = None,
+        storage_class: str = "STANDARD",
+    ) -> None:
+        """Store or update metadata for a local object.
+
+        Args:
+            bucket_name: S3 bucket name
+            object_key: S3 object key
+            size: File size in bytes
+            etag: S3 ETag (MD5 hash)
+            last_modified: Last modification timestamp
+            content_type: MIME content type
+            metadata: User metadata dictionary
+            storage_class: Storage class (default: STANDARD)
+        """
+        import json
+
+        metadata_json = json.dumps(metadata or {})
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO local_objects
+                (bucket_name, object_key, size, etag, last_modified,
+                 content_type, metadata, storage_class)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    bucket_name,
+                    object_key,
+                    size,
+                    etag,
+                    last_modified.isoformat(),
+                    content_type,
+                    metadata_json,
+                    storage_class,
+                ),
+            )
+
+        logger.debug(f"Stored metadata for {bucket_name}/{object_key}")
+
+    def get_local_object(
+        self, bucket_name: str, object_key: str
+    ) -> LocalObjectMetadata | None:
+        """Get metadata for a local object.
+
+        Args:
+            bucket_name: S3 bucket name
+            object_key: S3 object key
+
+        Returns:
+            Dictionary with object metadata or None if not found
+        """
+        import json
+
+        with self._get_connection() as conn:
+            result = conn.execute(
+                """SELECT bucket_name, object_key, size, etag, last_modified,
+                          content_type, metadata, storage_class
+                   FROM local_objects
+                   WHERE bucket_name = ? AND object_key = ?""",
+                (bucket_name, object_key),
+            ).fetchone()
+
+            if not result:
+                return None
+
+            return {
+                "bucket_name": result["bucket_name"],
+                "object_key": result["object_key"],
+                "size": result["size"],
+                "etag": result["etag"],
+                "last_modified": datetime.fromisoformat(result["last_modified"]),
+                "content_type": result["content_type"],
+                "metadata": json.loads(result["metadata"] or "{}"),
+                "storage_class": result["storage_class"],
+            }
+
+    def delete_local_object(self, bucket_name: str, object_key: str) -> bool:
+        """Delete metadata for a local object.
+
+        Args:
+            bucket_name: S3 bucket name
+            object_key: S3 object key
+
+        Returns:
+            True if object was deleted, False if not found
+        """
+        with self._get_connection() as conn:
+            result = conn.execute(
+                "DELETE FROM local_objects WHERE bucket_name = ? AND object_key = ?",
+                (bucket_name, object_key),
+            )
+            deleted = result.rowcount > 0
+            if deleted:
+                logger.debug(f"Deleted metadata for {bucket_name}/{object_key}")
+            return deleted
+
+    def list_local_objects(
+        self, bucket_name: str, prefix: str = ""
+    ) -> list[LocalObjectMetadata]:
+        """List all objects in a bucket.
+
+        Args:
+            bucket_name: S3 bucket name
+            prefix: Optional key prefix filter
+
+        Returns:
+            List of object metadata dictionaries
+        """
+        import json
+
+        with self._get_connection() as conn:
+            if prefix:
+                results = conn.execute(
+                    """SELECT bucket_name, object_key, size, etag, last_modified,
+                              content_type, metadata, storage_class
+                       FROM local_objects
+                       WHERE bucket_name = ? AND object_key LIKE ?
+                       ORDER BY object_key""",
+                    (bucket_name, f"{prefix}%"),
+                ).fetchall()
+            else:
+                results = conn.execute(
+                    """SELECT bucket_name, object_key, size, etag, last_modified,
+                              content_type, metadata, storage_class
+                       FROM local_objects
+                       WHERE bucket_name = ?
+                       ORDER BY object_key""",
+                    (bucket_name,),
+                ).fetchall()
+
+            objects = []
+            for row in results:
+                objects.append(
+                    {
+                        "bucket_name": row["bucket_name"],
+                        "object_key": row["object_key"],
+                        "size": row["size"],
+                        "etag": row["etag"],
+                        "last_modified": datetime.fromisoformat(row["last_modified"]),
+                        "content_type": row["content_type"],
+                        "metadata": json.loads(row["metadata"] or "{}"),
+                        "storage_class": row["storage_class"],
+                    }
+                )
+
+            return objects
+
+    def cleanup_local_bucket(self, bucket_name: str) -> int:
+        """Remove all objects for a bucket.
+
+        Args:
+            bucket_name: S3 bucket name
+
+        Returns:
+            Number of objects removed
+        """
+        with self._get_connection() as conn:
+            result = conn.execute(
+                "DELETE FROM local_objects WHERE bucket_name = ?", (bucket_name,)
+            )
+            count = result.rowcount
+            logger.info(f"Cleaned up {count} objects for bucket {bucket_name}")
+            return count
+
+    def get_local_stats(self, bucket_name: str | None = None) -> dict[str, int | None]:
+        """Get statistics for local storage.
+
+        Args:
+            bucket_name: Optional bucket name to filter by
+
+        Returns:
+            Dictionary with statistics:
+                - total_objects: Number of objects
+                - total_size: Total size in bytes
+        """
+        with self._get_connection() as conn:
+            if bucket_name is None:
+                result = conn.execute(
+                    """SELECT
+                        COUNT(*) as total_objects,
+                        SUM(size) as total_size
+                    FROM local_objects"""
+                ).fetchone()
+            else:
+                result = conn.execute(
+                    """SELECT
+                        COUNT(*) as total_objects,
+                        SUM(size) as total_size
+                    FROM local_objects WHERE bucket_name = ?""",
+                    (bucket_name,),
+                ).fetchone()
+
+            return {
+                "total_objects": result["total_objects"] or 0,
+                "total_size": result["total_size"] or 0,
+            }
+
+    def list_local_buckets(self) -> list[str]:
+        """List all bucket names with objects.
+
+        Returns:
+            List of bucket names
+        """
+        with self._get_connection() as conn:
+            results = conn.execute(
+                "SELECT DISTINCT bucket_name FROM local_objects ORDER BY bucket_name"
+            ).fetchall()
+            return [row["bucket_name"] for row in results]

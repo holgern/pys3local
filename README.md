@@ -205,7 +205,7 @@ Commands:
   serve    Start the S3-compatible server
   config   Enter an interactive configuration session
   obscure  Obscure a password for use in config files
-  cache    Manage MD5 metadata cache for Drime backend
+  cache    Manage metadata cache (local storage backend uses SQLite cache)
 ```
 
 ### Server Options
@@ -508,6 +508,47 @@ pys3local config
 export DRIME_API_KEY="your-api-key"
 pys3local serve --backend drime --no-auth
 ```
+
+### S3 Browser / Windows Clients: Access Denied
+
+**Problem:** When using S3 Browser on Windows, you get `AccessDenied` errors even with
+correct credentials.
+
+**Solution:** S3 Browser and some Windows-based S3 clients use **AWS Signature Version
+2** authentication by default. As of the latest version, pys3local supports both
+Signature V2 and V4.
+
+**Configuration for S3 Browser:**
+
+1. Start the server:
+
+   ```bash
+   pys3local serve --path /srv/s3 --access-key-id test --secret-access-key test
+   ```
+
+2. In S3 Browser, configure:
+
+   - **Account Type**: S3 Compatible Storage
+   - **REST Endpoint**: `localhost:10001` (or your server address)
+   - **Access Key ID**: `test` (must match server config)
+   - **Secret Access Key**: `test` (must match server config)
+   - **Signature Version**: V2 or V4 (both work now)
+   - **Use SSL**: Unchecked (unless you have HTTPS configured)
+
+3. If you still see authentication errors, enable debug logging to troubleshoot:
+
+   ```bash
+   pys3local serve --path /srv/s3 --access-key-id test --secret-access-key test --debug
+   ```
+
+   Look for log messages like:
+
+   - `"Detected AWS Signature V2 authentication"`
+   - `"Signature V2 verified successfully"`
+   - `"Access key mismatch"` (if credentials don't match)
+
+**Note:** Both AWS Signature V2 and V4 are fully supported. The server will
+automatically detect which version the client is using.
 
 ### Complete rclone Configuration Reference
 

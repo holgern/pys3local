@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -19,6 +18,7 @@ from pys3local.errors import (
     NoSuchBucket,
     NoSuchKey,
 )
+from pys3local.metadata_db import MetadataDB
 from pys3local.models import Bucket, S3Object
 from pys3local.provider import StorageProvider
 
@@ -32,17 +32,29 @@ class LocalStorageProvider(StorageProvider):
     """Local filesystem storage provider.
 
     Stores S3 buckets and objects on the local filesystem.
+    Metadata is stored in SQLite database for efficient access.
     """
 
-    def __init__(self, base_path: Path | str, readonly: bool = False):
+    def __init__(
+        self,
+        base_path: Path | str,
+        readonly: bool = False,
+        metadata_db: MetadataDB | None = None,
+    ):
         """Initialize local storage provider.
 
         Args:
             base_path: Base directory for storing buckets
             readonly: If True, disable write operations
+            metadata_db: MetadataDB instance (created if None)
         """
         self.base_path = Path(base_path)
         self.readonly = readonly
+
+        # Initialize metadata database
+        if metadata_db is None:
+            metadata_db = MetadataDB()
+        self.metadata_db = metadata_db
 
         # Create base directory if it doesn't exist
         if not self.base_path.exists():
@@ -73,21 +85,6 @@ class LocalStorageProvider(StorageProvider):
         """
         bucket_path = self._get_bucket_path(bucket_name)
         return bucket_path / "objects" / key
-
-    def _get_metadata_path(self, bucket_name: str, key: str) -> Path:
-        """Get path to object metadata file.
-
-        Args:
-            bucket_name: Bucket name
-            key: Object key
-
-        Returns:
-            Path to metadata file
-        """
-        bucket_path = self._get_bucket_path(bucket_name)
-        # Store metadata in .metadata directory with .json extension
-        metadata_dir = bucket_path / ".metadata"
-        return metadata_dir / f"{key}.json"
 
     def _validate_bucket_name(self, bucket_name: str) -> None:
         """Validate bucket name according to S3 rules.
@@ -131,34 +128,26 @@ class LocalStorageProvider(StorageProvider):
             raise InvalidKeyName(key)
 
     def _save_metadata(self, bucket_name: str, key: str, obj: S3Object) -> None:
-        """Save object metadata to disk.
+        """Save object metadata to database.
 
         Args:
             bucket_name: Bucket name
             key: Object key
             obj: S3Object with metadata
         """
-        metadata_path = self._get_metadata_path(bucket_name, key)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-        metadata = {
-            "key": obj.key,
-            "size": obj.size,
-            "etag": obj.etag,
-            "last_modified": obj.last_modified.isoformat(),
-            "content_type": obj.content_type,
-            "metadata": obj.metadata,
-            "storage_class": obj.storage_class,
-        }
-
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        # Set permissions
-        os.chmod(metadata_path, 0o600)
+        self.metadata_db.set_local_object(
+            bucket_name=bucket_name,
+            object_key=key,
+            size=obj.size,
+            etag=obj.etag,
+            last_modified=obj.last_modified,
+            content_type=obj.content_type,
+            metadata=obj.metadata,
+            storage_class=obj.storage_class,
+        )
 
     def _load_metadata(self, bucket_name: str, key: str) -> S3Object:
-        """Load object metadata from disk.
+        """Load object metadata from database.
 
         Args:
             bucket_name: Bucket name
@@ -168,24 +157,23 @@ class LocalStorageProvider(StorageProvider):
             S3Object with metadata
 
         Raises:
-            NoSuchKey: If metadata file doesn't exist
+            NoSuchKey: If metadata doesn't exist
         """
-        metadata_path = self._get_metadata_path(bucket_name, key)
+        from typing import cast
 
-        if not metadata_path.exists():
+        metadata = self.metadata_db.get_local_object(bucket_name, key)
+
+        if not metadata:
             raise NoSuchKey(key)
 
-        with open(metadata_path) as f:
-            metadata = json.load(f)
-
         return S3Object(
-            key=metadata["key"],
-            size=metadata["size"],
-            etag=metadata["etag"],
-            last_modified=datetime.fromisoformat(metadata["last_modified"]),
-            content_type=metadata.get("content_type", "application/octet-stream"),
-            metadata=metadata.get("metadata", {}),
-            storage_class=metadata.get("storage_class", "STANDARD"),
+            key=cast(str, metadata["object_key"]),
+            size=cast(int, metadata["size"]),
+            etag=cast(str, metadata["etag"]),
+            last_modified=cast(datetime, metadata["last_modified"]),
+            content_type=cast(str, metadata["content_type"]),
+            metadata=cast(dict[str, str], metadata["metadata"]),
+            storage_class=cast(str, metadata["storage_class"]),
         )
 
     def list_buckets(self) -> list[Bucket]:
@@ -229,7 +217,6 @@ class LocalStorageProvider(StorageProvider):
         # Create bucket directory structure
         bucket_path.mkdir(parents=True, mode=0o700)
         (bucket_path / "objects").mkdir(mode=0o700)
-        (bucket_path / ".metadata").mkdir(mode=0o700)
 
         logger.info(f"Created bucket: {bucket_name}")
 
@@ -263,6 +250,9 @@ class LocalStorageProvider(StorageProvider):
 
         # Delete bucket directory
         shutil.rmtree(bucket_path)
+
+        # Clean up metadata from database
+        self.metadata_db.cleanup_local_bucket(bucket_name)
 
         logger.info(f"Deleted bucket: {bucket_name}")
 
@@ -328,21 +318,12 @@ class LocalStorageProvider(StorageProvider):
         if not self.bucket_exists(bucket_name):
             raise NoSuchBucket(bucket_name)
 
-        objects_path = self._get_bucket_path(bucket_name) / "objects"
-        all_keys = []
+        # Get all objects from database (much faster than filesystem walk)
+        objects_metadata = self.metadata_db.list_local_objects(bucket_name, prefix)
+        all_keys = [obj["object_key"] for obj in objects_metadata]
 
-        # Walk through the objects directory
-        for root, _dirs, files in os.walk(objects_path):
-            for file in files:
-                # Get relative path from objects directory
-                file_path = Path(root) / file
-                rel_path = file_path.relative_to(objects_path)
-                key = str(rel_path).replace(os.sep, "/")
-                all_keys.append(key)
-
-        # Filter by prefix
-        if prefix:
-            all_keys = [k for k in all_keys if k.startswith(prefix)]
+        # Create lookup dict for fast metadata access
+        metadata_lookup = {obj["object_key"]: obj for obj in objects_metadata}
 
         # Filter by marker
         if marker:
@@ -379,16 +360,24 @@ class LocalStorageProvider(StorageProvider):
         else:
             next_marker = ""
 
-        # Load metadata for contents
+        # Load metadata for contents from our lookup dict
         contents = []
         for key in contents_keys:
-            try:
-                obj = self._load_metadata(bucket_name, key)
+            if key in metadata_lookup:
+                meta = metadata_lookup[key]
+                obj = S3Object(
+                    key=meta["object_key"],
+                    size=meta["size"],
+                    etag=meta["etag"],
+                    last_modified=meta["last_modified"],
+                    content_type=meta["content_type"],
+                    metadata=meta["metadata"],
+                    storage_class=meta["storage_class"],
+                )
                 contents.append(obj)
-            except (NoSuchKey, FileNotFoundError, json.JSONDecodeError):
-                # Skip objects without metadata
-                logger.warning(f"Skipping object without metadata: {key}")
-                continue
+            else:
+                # Shouldn't happen, but log if it does
+                logger.warning(f"Metadata not found for key: {key}")
 
         return {
             "contents": contents,
@@ -535,24 +524,17 @@ class LocalStorageProvider(StorageProvider):
             raise NoSuchBucket(bucket_name)
 
         object_path = self._get_object_path(bucket_name, key)
-        metadata_path = self._get_metadata_path(bucket_name, key)
 
         # Delete object file
         if object_path.exists():
             object_path.unlink()
 
-        # Delete metadata file
-        if metadata_path.exists():
-            metadata_path.unlink()
+        # Delete metadata from database
+        self.metadata_db.delete_local_object(bucket_name, key)
 
         # Clean up empty directories
         try:
             object_path.parent.rmdir()
-        except OSError:
-            pass  # Directory not empty
-
-        try:
-            metadata_path.parent.rmdir()
         except OSError:
             pass  # Directory not empty
 

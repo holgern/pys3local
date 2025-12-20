@@ -433,3 +433,121 @@ def test_server_404_on_missing_bucket(tmp_path):
 
     response = client.get("/missing-bucket")
     assert response.status_code == 404
+
+
+def test_server_sigv2_authentication(tmp_path):
+    """Test AWS Signature Version 2 authentication."""
+    import base64
+    import hmac
+    from datetime import datetime
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region="us-east-1",
+        no_auth=False,  # Authentication required
+    )
+
+    client = TestClient(app)
+
+    # Build Signature V2 authorization header
+    http_method = "GET"
+    content_md5 = ""
+    content_type = ""
+    date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    canonical_resource = "/test-bucket"
+
+    # String to sign
+    string_to_sign = (
+        f"{http_method}\n{content_md5}\n{content_type}\n{date}\n{canonical_resource}"
+    )
+
+    # Calculate signature
+    signature = base64.b64encode(
+        hmac.new(
+            secret_key.encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            hashlib.sha1,
+        ).digest()
+    ).decode("utf-8")
+
+    # Build authorization header
+    auth_header = f"AWS {access_key}:{signature}"
+
+    # Make request with Signature V2
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Date": date,
+        },
+    )
+
+    # Should succeed with proper authentication
+    assert response.status_code == 200
+
+
+def test_server_sigv2_authentication_failure(tmp_path):
+    """Test AWS Signature Version 2 authentication failure with wrong key."""
+    import base64
+    import hmac
+    from datetime import datetime
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region="us-east-1",
+        no_auth=False,  # Authentication required
+    )
+
+    client = TestClient(app)
+
+    # Build Signature V2 with WRONG secret key
+    http_method = "GET"
+    content_md5 = ""
+    content_type = ""
+    date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    canonical_resource = "/test-bucket"
+
+    string_to_sign = (
+        f"{http_method}\n{content_md5}\n{content_type}\n{date}\n{canonical_resource}"
+    )
+
+    # Calculate signature with WRONG key
+    wrong_secret = "wrong-secret-key"
+    signature = base64.b64encode(
+        hmac.new(
+            wrong_secret.encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            hashlib.sha1,
+        ).digest()
+    ).decode("utf-8")
+
+    auth_header = f"AWS {access_key}:{signature}"
+
+    # Make request with invalid signature
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Date": date,
+        },
+    )
+
+    # Should fail with AccessDenied
+    assert response.status_code == 403  # AccessDenied
+    assert b"AccessDenied" in response.content

@@ -68,6 +68,15 @@ def create_s3_app(
     app.state.region = region
     app.state.no_auth = no_auth
 
+    # Add global exception handler for S3 errors
+    @app.exception_handler(S3Error)
+    async def s3_error_handler(request: Request, exc: S3Error) -> Response:
+        """Handle S3 errors and convert to XML response."""
+        xml = xml_templates.format_error_xml(exc.code, exc.message)
+        return Response(
+            content=xml, media_type=XML_CONTENT_TYPE, status_code=exc.status_code
+        )
+
     # Setup routes
     _setup_routes(app)
 
@@ -161,8 +170,75 @@ async def _verify_auth(request: Request) -> bool:
             raise AccessDenied()
         return True
 
+    # Check for Signature V2 (older AWS signature format)
+    if auth_header.startswith("AWS "):
+        logger.debug("Detected AWS Signature V2 authentication")
+        # Parse: "AWS AccessKeyId:Signature"
+        try:
+            _, auth_data = auth_header.split(" ", 1)
+            provided_access_key, signature = auth_data.split(":", 1)
+
+            # Verify access key
+            if provided_access_key != access_key:
+                logger.warning(
+                    f"Access key mismatch: {provided_access_key} != {access_key}"
+                )
+                raise AccessDenied()
+
+            # Build string to sign for V2
+            # Format: HTTP-Verb\nContent-MD5\nContent-Type\nDate\n
+            #         CanonicalizedAmzHeaders\nCanonicalizedResource
+            content_md5 = request.headers.get("content-md5", "")
+            content_type = request.headers.get("content-type", "")
+            date = request.headers.get("date", "")
+
+            # Get x-amz-* headers (sorted)
+            amz_headers = []
+            for key, value in sorted(request.headers.items()):
+                if key.lower().startswith("x-amz-"):
+                    amz_headers.append(f"{key.lower()}:{value.strip()}")
+            canonical_amz_headers = "\n".join(amz_headers)
+            if canonical_amz_headers:
+                canonical_amz_headers += "\n"
+
+            # Canonicalized resource: bucket and key
+            canonical_resource = request.url.path
+
+            string_to_sign = "\n".join(
+                [
+                    request.method,
+                    content_md5,
+                    content_type,
+                    date,
+                    canonical_amz_headers + canonical_resource,
+                ]
+            )
+
+            logger.debug(f"SigV2 string to sign: {repr(string_to_sign)}")
+
+            is_valid = auth.verify_signature_v2(
+                access_key=access_key,
+                secret_key=secret_key,
+                signature=signature,
+                string_to_sign=string_to_sign,
+            )
+
+            if not is_valid:
+                logger.warning("Signature V2 verification failed")
+                raise AccessDenied()
+
+            logger.debug("Signature V2 verified successfully")
+            return True
+
+        except (ValueError, IndexError) as e:
+            logger.error(f"Failed to parse Signature V2 header: {e}")
+            raise AccessDenied() from e
+
     # No authentication provided
     if not request.app.state.no_auth:
+        logger.warning(
+            f"No valid authentication provided. Auth header: {auth_header[:50]}"
+        )
         raise AccessDenied()
 
     return True

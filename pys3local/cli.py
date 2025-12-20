@@ -422,93 +422,73 @@ def config() -> None:
 
 @cli.group()
 def cache() -> None:
-    """Manage MD5 metadata cache for Drime backend.
+    """Manage metadata cache for local storage backend.
 
-    The cache stores MD5 hashes for files in Drime to ensure S3 compatibility.
+    The cache stores object metadata in SQLite for efficient access.
     """
     pass
 
 
 @cache.command(name="stats")
 @click.option(
-    "--workspace",
-    type=int,
+    "--bucket",
+    type=str,
     default=None,
-    help="Show stats for specific workspace (default: all workspaces)",
+    help="Show stats for specific bucket (default: all buckets)",
 )
-def cache_stats(workspace: Optional[int]) -> None:
-    """Show cache statistics."""
+def cache_stats(bucket: Optional[str]) -> None:
+    """Show cache statistics for local storage."""
     from pys3local.metadata_db import MetadataDB
 
     db = MetadataDB()
 
-    if workspace is None:
-        # Show stats for all workspaces
-        workspaces = db.list_workspaces()
+    if bucket is None:
+        # Show stats for all buckets
+        buckets = db.list_local_buckets()
 
-        if not workspaces:
+        if not buckets:
             console.print("[yellow]Cache is empty[/yellow]")
             return
 
-        console.print("\n[bold cyan]MD5 Cache Statistics[/bold cyan]\n")
+        console.print("\n[bold cyan]Local Storage Cache Statistics[/bold cyan]\n")
 
         # Overall stats
-        overall_stats = db.get_stats()
+        overall_stats = db.get_local_stats()
         console.print("[bold]Overall Statistics:[/bold]")
-        console.print(f"  Total files: {overall_stats['total_files']:,}")
+        console.print(f"  Total objects: {overall_stats['total_objects']:,}")
         console.print(f"  Total size: {_format_size(overall_stats['total_size'])}")
-        if overall_stats["oldest_entry"]:
-            console.print(f"  Oldest entry: {overall_stats['oldest_entry']}")
-        if overall_stats["newest_entry"]:
-            console.print(f"  Newest entry: {overall_stats['newest_entry']}")
 
-        # Per-workspace stats
-        console.print("\n[bold]Per-Workspace Statistics:[/bold]")
-        for ws_id in workspaces:
-            ws_stats = db.get_stats(ws_id)
-            console.print(f"\n  Workspace {ws_id}:")
-            console.print(f"    Files: {ws_stats['total_files']:,}")
-            console.print(f"    Size: {_format_size(ws_stats['total_size'])}")
-            if ws_stats["oldest_entry"]:
-                console.print(f"    Oldest: {ws_stats['oldest_entry']}")
-            if ws_stats["newest_entry"]:
-                console.print(f"    Newest: {ws_stats['newest_entry']}")
+        # Per-bucket stats
+        console.print("\n[bold]Per-Bucket Statistics:[/bold]")
+        for bucket_name in buckets:
+            bucket_stats = db.get_local_stats(bucket_name)
+            console.print(f"\n  {bucket_name}:")
+            console.print(f"    Objects: {bucket_stats['total_objects']:,}")
+            console.print(f"    Size: {_format_size(bucket_stats['total_size'])}")
 
         console.print()
     else:
-        # Show stats for specific workspace
-        stats = db.get_stats(workspace)
+        # Show stats for specific bucket
+        stats = db.get_local_stats(bucket)
 
-        if stats["total_files"] == 0:
-            console.print(
-                f"[yellow]No cache entries for workspace {workspace}[/yellow]"
-            )
+        if stats["total_objects"] == 0:
+            console.print(f"[yellow]No cache entries for bucket '{bucket}'[/yellow]")
             return
 
         console.print(
-            f"\n[bold cyan]MD5 Cache Statistics - Workspace {workspace}[/bold cyan]\n"
+            f"\n[bold cyan]Cache Statistics - Bucket '{bucket}'[/bold cyan]\n"
         )
-        console.print(f"Total files: {stats['total_files']:,}")
+        console.print(f"Total objects: {stats['total_objects']:,}")
         console.print(f"Total size: {_format_size(stats['total_size'])}")
-        if stats["oldest_entry"]:
-            console.print(f"Oldest entry: {stats['oldest_entry']}")
-        if stats["newest_entry"]:
-            console.print(f"Newest entry: {stats['newest_entry']}")
         console.print()
 
 
 @cache.command(name="cleanup")
 @click.option(
-    "--workspace",
-    type=int,
-    default=None,
-    help="Clean cache for specific workspace",
-)
-@click.option(
     "--bucket",
     type=str,
     default=None,
-    help="Clean cache for specific bucket (requires --workspace)",
+    help="Clean cache for specific bucket",
 )
 @click.option(
     "--all",
@@ -516,14 +496,11 @@ def cache_stats(workspace: Optional[int]) -> None:
     is_flag=True,
     help="Clean entire cache (requires confirmation)",
 )
-def cache_cleanup(
-    workspace: Optional[int], bucket: Optional[str], clean_all: bool
-) -> None:
-    """Clean cache entries.
+def cache_cleanup(bucket: Optional[str], clean_all: bool) -> None:
+    """Clean cache entries for local storage.
 
     Examples:
-      pys3local cache cleanup --workspace 123
-      pys3local cache cleanup --workspace 123 --bucket my-bucket
+      pys3local cache cleanup --bucket my-bucket
       pys3local cache cleanup --all
     """
     from pys3local.metadata_db import MetadataDB
@@ -531,69 +508,49 @@ def cache_cleanup(
     db = MetadataDB()
 
     # Validate options
-    if bucket and workspace is None:
-        console.print("[red]Error: --bucket requires --workspace[/red]")
+    if not clean_all and bucket is None:
+        console.print("[red]Error: Must specify --bucket or --all[/red]")
         sys.exit(1)
 
-    if sum([clean_all, workspace is not None, bucket is not None]) == 0:
-        console.print("[red]Error: Must specify --workspace, --bucket, or --all[/red]")
-        sys.exit(1)
-
-    if sum([clean_all, workspace is not None]) > 1:
-        console.print("[red]Error: Cannot combine --all with other options[/red]")
+    if clean_all and bucket is not None:
+        console.print("[red]Error: Cannot combine --all with --bucket[/red]")
         sys.exit(1)
 
     # Perform cleanup
     if clean_all:
         # Get stats before cleanup
-        stats = db.get_stats()
-        if stats["total_files"] == 0:
+        stats = db.get_local_stats()
+        if stats["total_objects"] == 0:
             console.print("[yellow]Cache is already empty[/yellow]")
             return
 
-        total = stats["total_files"]
+        total = stats["total_objects"]
         console.print(
             f"\n[bold yellow]Warning:[/bold yellow] This will remove "
-            f"{total:,} entries from the cache."
+            f"{total:,} objects from the cache."
         )
         if not click.confirm("Are you sure?"):
             console.print("Aborted.")
             return
 
-        # Clean all workspaces
-        workspaces = db.list_workspaces()
+        # Clean all buckets
+        buckets = db.list_local_buckets()
         total_removed = 0
-        for ws_id in workspaces:
-            removed = db.cleanup_workspace(ws_id)
+        for bucket_name in buckets:
+            removed = db.cleanup_local_bucket(bucket_name)
             total_removed += removed
 
-        console.print(f"[green]✓[/green] Removed {total_removed:,} entries from cache")
+        console.print(f"[green]✓[/green] Removed {total_removed:,} objects from cache")
 
     elif bucket:
         # Clean specific bucket
-        removed = db.cleanup_bucket(workspace, bucket)  # type: ignore[arg-type]
+        removed = db.cleanup_local_bucket(bucket)
         if removed == 0:
-            msg = (
-                f"[yellow]No entries found for bucket '{bucket}' "
-                f"in workspace {workspace}[/yellow]"
-            )
-            console.print(msg)
+            console.print(f"[yellow]No entries found for bucket '{bucket}'[/yellow]")
         else:
-            msg = (
-                f"[green]✓[/green] Removed {removed:,} entries "
-                f"for bucket '{bucket}' in workspace {workspace}"
+            console.print(
+                f"[green]✓[/green] Removed {removed:,} objects for bucket '{bucket}'"
             )
-            console.print(msg)
-
-    else:
-        # Clean specific workspace
-        removed = db.cleanup_workspace(workspace)  # type: ignore[arg-type]
-        if removed == 0:
-            msg = f"[yellow]No entries found for workspace {workspace}[/yellow]"
-            console.print(msg)
-        else:
-            msg = f"[green]✓[/green] Removed {removed:,} entries for workspace {workspace}"  # noqa: E501
-            console.print(msg)
 
 
 @cache.command(name="vacuum")
@@ -623,177 +580,6 @@ def cache_vacuum() -> None:
     console.print(f"  After: {_format_size(size_after)}")
     if saved > 0:
         console.print(f"  Saved: {_format_size(saved)}")
-
-
-@cache.command(name="migrate")
-@click.option(
-    "--backend-config",
-    required=True,
-    help="Backend configuration name (from ~/.config/pys3local/backends.toml)",
-)
-@click.option(
-    "--workspace",
-    type=int,
-    default=None,
-    help="Migrate specific workspace (uses backend config default if not specified)",
-)
-@click.option(
-    "--bucket",
-    type=str,
-    default=None,
-    help="Migrate specific bucket (requires workspace)",
-)
-@click.option(
-    "--root-folder",
-    type=str,
-    default=None,
-    help="Limit scope to specific folder in workspace (e.g., 'backups/s3')",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Show what would be migrated without actually doing it",
-)
-def cache_migrate(
-    backend_config: str,
-    workspace: Optional[int],
-    bucket: Optional[str],
-    root_folder: Optional[str],
-    dry_run: bool,
-) -> None:
-    """Pre-populate MD5 cache by downloading files from Drime.
-
-    This command downloads files from Drime to calculate their MD5 hashes
-    and store them in the cache. This is useful for files that were uploaded
-    before MD5 caching was implemented.
-
-    Examples:
-      pys3local cache migrate --backend-config my-drime
-      pys3local cache migrate --backend-config my-drime --bucket my-bucket
-      pys3local cache migrate --backend-config my-drime --dry-run
-    """
-    from pys3local.metadata_db import MetadataDB
-
-    # Create Drime provider
-    provider, config_info = _create_drime_provider(
-        backend_config, readonly=True, root_folder=root_folder
-    )
-
-    # Get workspace ID
-    if workspace is None:
-        workspace = config_info.get("workspace_id", 0)
-
-    console.print("\n[bold cyan]MD5 Cache Migration[/bold cyan]")
-    console.print(f"Backend: {backend_config}")
-    console.print(f"Workspace: {workspace}")
-    if bucket:
-        console.print(f"Bucket: {bucket}")
-    if dry_run:
-        console.print("[yellow]DRY RUN - No changes will be made[/yellow]")
-    console.print()
-
-    db = MetadataDB()
-
-    # List buckets
-    try:
-        buckets_list = provider.list_buckets()
-        bucket_names = [b.name for b in buckets_list.buckets]
-    except Exception as e:
-        console.print(f"[red]Error listing buckets: {e}[/red]")
-        sys.exit(1)
-
-    # Filter by bucket if specified
-    if bucket:
-        if bucket not in bucket_names:
-            console.print(f"[red]Error: Bucket '{bucket}' not found[/red]")
-            sys.exit(1)
-        bucket_names = [bucket]
-
-    if not bucket_names:
-        console.print("[yellow]No buckets found[/yellow]")
-        return
-
-    # Process each bucket
-    total_files = 0
-    total_cached = 0
-    total_migrated = 0
-
-    for bucket_name in bucket_names:
-        console.print(f"\n[bold]Processing bucket: {bucket_name}[/bold]")
-
-        try:
-            # List objects in bucket
-            result = provider.list_objects(bucket_name, prefix="", delimiter="")
-
-            if not result.contents:
-                console.print("  [dim]No objects found[/dim]")
-                continue
-
-            for obj in result.contents:
-                total_files += 1
-
-                # Check if already cached
-                existing_md5 = db.get_md5_by_key(workspace, bucket_name, obj.key)
-
-                if existing_md5:
-                    total_cached += 1
-                    console.print(f"  [dim]✓ {obj.key} (already cached)[/dim]")
-                    continue
-
-                if dry_run:
-                    console.print(f"  [yellow]→ {obj.key} (would migrate)[/yellow]")
-                    total_migrated += 1
-                else:
-                    # Download and calculate MD5
-                    console.print(f"  → {obj.key} [dim](downloading...)[/dim]")
-                    try:
-                        import hashlib
-
-                        obj_result = provider.get_object(bucket_name, obj.key)
-
-                        # Calculate MD5
-                        hasher = hashlib.md5()
-                        hasher.update(obj_result.data)
-                        md5_hash = hasher.hexdigest()
-
-                        # Store in cache
-                        # We need file_entry_id from the provider
-                        # For Drime provider, we can extract it
-                        # from the object metadata
-                        if hasattr(provider, "metadata_db"):
-                            # Use provider's put_object to store MD5
-                            # But we already have the file, so we just
-                            # need to cache it. Let's use set_md5
-                            # directly with a placeholder file_entry_id.
-                            # Actually, we need to get the file_entry_id
-                            # from Drime
-
-                            # For now, skip this - it's complex and
-                            # requires provider changes
-                            msg = (
-                                "    [yellow]Warning: Cannot migrate "
-                                "without file_entry_id[/yellow]"
-                            )
-                            console.print(msg)
-                            continue
-
-                        total_migrated += 1
-                        console.print(
-                            f"    [green]✓ Migrated (MD5: {md5_hash})[/green]"
-                        )
-
-                    except Exception as e:
-                        console.print(f"    [red]Error: {e}[/red]")
-
-        except Exception as e:
-            console.print(f"  [red]Error processing bucket: {e}[/red]")
-
-    # Summary
-    console.print("\n[bold]Migration Summary:[/bold]")
-    console.print(f"  Total files: {total_files}")
-    console.print(f"  Already cached: {total_cached}")
-    console.print(f"  {'Would migrate' if dry_run else 'Migrated'}: {total_migrated}")
-    console.print()
 
 
 def _format_size(size_bytes: Union[int, str, None]) -> str:
