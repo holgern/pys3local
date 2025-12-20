@@ -265,14 +265,14 @@ If ETags don't change when files change, you'll see:
 This indicates a **critical bug** in the ETag implementation that would cause data loss
 with rclone sync.
 
-### test_drime_etag.py
+### drime_etag.py
 
-Comprehensive ETag format validation for Drime backend (uses hash+size format).
+Comprehensive ETag format validation for Drime backend (uses UUID format).
 
-Tests the new `{hash}-{size}` ETag format:
+Tests the UUID ETag format:
 
-1. Verifies format is correct
-2. Tests change detection (same size, different content)
+1. Verifies format is correct (UUID from file_name field)
+2. Tests change detection (UUID changes when file changes)
 3. Tests consistency (same file = same ETag)
 4. Simulates rclone sync scenario
 5. Confirms boto3 compatibility
@@ -281,7 +281,7 @@ Tests the new `{hash}-{size}` ETag format:
 **Usage:**
 
 ```bash
-python -m benchmarks.test_drime_etag
+python -m benchmarks.drime_etag
 # You'll be prompted for Drime credentials
 ```
 

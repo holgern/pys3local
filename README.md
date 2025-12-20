@@ -263,14 +263,14 @@ pys3local serve --backend-config mydrime
 
 ### How ETags Work
 
-When using the Drime backend, pys3local uses **Drime's native file hash combined with
-file size** as the ETag (Entity Tag). The format is `{hash}-{size}`, similar to AWS
-multipart upload ETags.
+When using the Drime backend, pys3local uses **Drime's native UUID** as the ETag (Entity
+Tag). This UUID is provided by Drime in the `file_name` field (also called `disk_prefix`
+in the API) and uniquely identifies each file.
 
 **Example ETags:**
 
-- `abc123def456789-1572864` (hash: abc123..., size: 1.5 MB)
-- `xyz789abc123def-512000` (hash: xyz789..., size: 500 KB)
+- `e77ad830-97f8-42a2-a13e-722fa10f02f5`
+- `a88be940-08e9-53b3-b24f-833gb21g13g6`
 
 ### Why Not MD5?
 
@@ -279,19 +279,20 @@ S3-compatible APIs don't actually require MD5 for ETags. Real-world examples:
 - **AWS multipart uploads**: `{hash}-{partcount}` (not pure MD5)
 - **AWS SSE-KMS encryption**: Random string (not MD5)
 - **Filen S3**: File UUID (not MD5)
-- **pys3local Drime**: `{hash}-{size}` (not MD5)
+- **pys3local Drime**: UUID from file_name (not MD5)
 
 Our approach provides:
 
 - ✅ **Works across multiple PCs** - No local cache synchronization needed
-- ✅ **Detects all changes** - Both content (hash) and size changes
+- ✅ **Detects all changes** - UUID changes when file content changes
 - ✅ **Fast operations** - No downloads or MD5 calculations required
 - ✅ **rclone compatible** - Tested with rclone, duplicati, restic
+- ✅ **Uses Drime's native identifier** - Consistent with Drime's internal system
 
 ### Optional MD5 Cache (Legacy)
 
 For backward compatibility, pys3local still maintains an optional MD5 cache. Files
-uploaded before the hash+size format will use cached MD5 if available.
+uploaded before the UUID format will use cached MD5 if available.
 
 ### Cache Commands
 
@@ -379,30 +380,30 @@ The MD5 cache database is stored at:
 
 ### How It Works
 
-1. **New files**: ETags are generated using `{drime_hash}-{file_size}` format
+1. **New files**: ETags are generated using Drime's UUID from the `file_name` field
 
    - No cache needed - works across all PCs immediately
-   - Changes when file content or size changes
+   - Changes when file is replaced (new UUID assigned)
    - Fast - no downloads or calculations needed
 
 2. **Legacy files** (uploaded with old MD5 cache system):
 
    - Uses cached MD5 if available
-   - Otherwise uses new hash+size format
+   - Otherwise uses UUID format
 
 3. **On Upload**: MD5 is calculated and cached for compatibility with tools that expect
    pure MD5
 
 ### Multi-PC Setup
 
-**No configuration needed!** The new hash+size ETag format works automatically across
-multiple PCs. You don't need to migrate or synchronize any cache.
+**No configuration needed!** The UUID ETag format works automatically across multiple
+PCs. You don't need to migrate or synchronize any cache.
 
 If you have files uploaded with the old MD5 cache system and want pure MD5 ETags, you
 can optionally run:
 
 ```bash
-# Only needed for old files uploaded before hash+size format
+# Only needed for old files uploaded before UUID format
 pys3local cache migrate --backend-config mydrime
 ```
 
@@ -613,7 +614,7 @@ The Drime backend stores data in Drime Cloud storage.
 Features:
 
 - Full S3 API compatibility through Drime's file API
-- Smart ETag generation using native hash + file size (works across multiple PCs)
+- Smart ETag generation using native UUID (works across multiple PCs)
 - Support for chunked uploads (AWS SDK v4)
 - Concurrent folder creation with retry logic
 - Workspace isolation
@@ -632,10 +633,9 @@ pys3local config  # Add Drime backend
 pys3local serve --backend-config mydrime
 ```
 
-The Drime backend uses Drime's native file hash combined with file size to generate
-S3-compatible ETags. This works automatically across multiple PCs without any cache
-synchronization. See the [ETag Implementation](#etag-implementation-drime-backend)
-section for details.
+The Drime backend uses Drime's native UUID to generate S3-compatible ETags. This works
+automatically across multiple PCs without any cache synchronization. See the
+[ETag Implementation](#etag-implementation-drime-backend) section for details.
 
 #### Root Folder (Scope Limiting)
 

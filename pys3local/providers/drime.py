@@ -119,8 +119,8 @@ class DrimeStorageProvider(StorageProvider):
     def _get_etag_for_entry(self, entry: FileEntry, bucket_name: str, key: str) -> str:
         """Get ETag for file entry.
 
-        Returns an S3-compatible ETag using Drime's native hash and file size.
-        Format: {hash}-{size} (similar to AWS multipart upload ETags).
+        Returns an S3-compatible ETag using Drime's UUID (disk_prefix/file_name).
+        Format: UUID (e.g., "e77ad830-97f8-42a2-a13e-722fa10f02f5")
 
         ETags in S3-compatible APIs don't need to be MD5 - they just need to be:
         1. Unique per file content
@@ -131,11 +131,11 @@ class DrimeStorageProvider(StorageProvider):
         - AWS multipart uploads: "d41d8cd98f00b204e9800998ecf8427e-5"
         - AWS SSE-KMS encrypted: random string
         - Filen S3: file UUID
-        - Drime (this implementation): "{hash}-{size}"
+        - Drime (this implementation): UUID from file_name field
 
         This approach:
         - Works across multiple PCs (no cache needed)
-        - Detects changes in both content (hash) and size
+        - Uses Drime's native UUID identifier
         - No downloads or MD5 calculations required
         - Compatible with rclone, duplicati, restic, etc.
 
@@ -145,20 +145,18 @@ class DrimeStorageProvider(StorageProvider):
             key: S3 object key
 
         Returns:
-            ETag string in format "{hash}-{size}" (without quotes)
+            ETag string (UUID without quotes)
         """
-        # Always use Drime's native hash combined with file size
+        # Use Drime's UUID from file_name field (disk_prefix in API response)
         # This provides a consistent, stable identifier that:
         # - Works across multiple PCs (no local cache needed)
-        # - Changes when file content changes (Drime updates hash)
-        # - Is S3-compatible (similar to AWS multipart/Filen format)
+        # - Is unique per file
+        # - Is S3-compatible (similar to Filen S3 format)
         # - Doesn't require MD5 calculation or caching
 
-        file_hash = entry.hash or str(entry.id)
-        file_size = entry.file_size or 0
-        etag = f"{file_hash}-{file_size}"
+        etag = entry.file_name or entry.hash or str(entry.id)
 
-        logger.debug(f"Using Drime hash+size ETag for {bucket_name}/{key}: {etag}")
+        logger.debug(f"Using Drime UUID ETag for {bucket_name}/{key}: {etag}")
         return etag
 
     def _create_folder_with_retry(
@@ -769,30 +767,37 @@ class DrimeStorageProvider(StorageProvider):
 
                 logger.info(f"Uploaded object: {bucket_name}/{key}")
 
-                # Extract file entry ID and hash from result
-                file_entry_id = None
-                file_hash = None
+                # Extract UUID (file_name) from result
+                file_uuid = None
                 if isinstance(result, dict):
                     if "file" in result:
-                        file_entry_id = result["file"].get("id")
-                        file_hash = result["file"].get("hash")
+                        file_uuid = result["file"].get("file_name")
                     elif "fileEntry" in result:
-                        file_entry_id = result["fileEntry"].get("id")
-                        file_hash = result["fileEntry"].get("hash")
+                        file_uuid = result["fileEntry"].get("file_name")
 
-                # Use hash-size format for ETag (don't cache MD5)
+                # Use UUID for ETag (from file_name field)
                 # This ensures consistency across multiple PCs and API calls
-                if not file_hash:
-                    file_hash = str(file_entry_id or 0)
+                if not file_uuid:
+                    # Fallback to hash or ID if UUID not available
+                    file_hash = None
+                    file_entry_id = None
+                    if isinstance(result, dict):
+                        if "file" in result:
+                            file_hash = result["file"].get("hash")
+                            file_entry_id = result["file"].get("id")
+                        elif "fileEntry" in result:
+                            file_hash = result["fileEntry"].get("hash")
+                            file_entry_id = result["fileEntry"].get("id")
+                    file_uuid = file_hash or str(file_entry_id or 0)
 
-                etag = f"{file_hash}-{len(data)}"
-                logger.debug(f"Generated ETag for {bucket_name}/{key}: {etag}")
+                etag = file_uuid
+                logger.debug(f"Generated UUID ETag for {bucket_name}/{key}: {etag}")
 
                 return S3Object(
                     key=key,
                     size=len(data),
                     last_modified=datetime.now(timezone.utc),
-                    etag=etag,  # Use hash-size format
+                    etag=etag,  # Use UUID format
                     content_type=content_type,
                     metadata=metadata or {},
                 )

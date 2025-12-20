@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Test script to verify Drime ETag format works with boto3 S3 client.
 
-This script tests the new hash+size ETag format for Drime backend:
-1. Verifies ETags are in {hash}-{size} format
+This script tests the UUID ETag format for Drime backend:
+1. Verifies ETags are in UUID format (from file_name field)
 2. Tests that ETags change when file changes
 3. Confirms boto3 accepts non-MD5 ETags
 4. Validates file integrity with changed ETags
@@ -123,7 +123,7 @@ def create_s3_client(port: int = 10001):
 
 
 def test_etag_format(s3_client, bucket_name: str) -> tuple[bool, str]:
-    """Test that ETags are in {hash}-{size} format.
+    """Test that ETags are in UUID format.
 
     Args:
         s3_client: boto3 S3 client
@@ -132,7 +132,7 @@ def test_etag_format(s3_client, bucket_name: str) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
-    print_step("TEST 1: Verify ETag format is {hash}-{size}")
+    print_step("TEST 1: Verify ETag format is UUID")
 
     # Upload a test file
     test_data = b"Hello, World!"
@@ -147,42 +147,24 @@ def test_etag_format(s3_client, bucket_name: str) -> tuple[bool, str]:
 
     print(f"  Received ETag: {etag}")
 
-    # Verify format: should be {hash}-{size}
-    if "-" not in etag:
-        return False, f"ETag '{etag}' is not in hash-size format (missing '-')"
+    # Verify format: should be UUID (with or without dashes)
+    # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars with dashes)
+    # or 32 hex chars without dashes
+    # Note: Drime uses UUID with dashes
+    if not etag:
+        return False, "ETag is empty"
 
-    parts = etag.split("-")
-    if len(parts) != 2:
-        return (
-            False,
-            f"ETag '{etag}' has wrong format "
-            f"(expected 'hash-size', got {len(parts)} parts)",
-        )
+    # Check if it looks like a UUID (contains dashes and is approximately right length)
+    # or if it's a fallback format (hash or numeric ID)
+    is_uuid_format = len(etag) >= 32 and ("-" in etag or len(etag) == 32)
 
-    hash_part, size_part = parts
+    if not is_uuid_format:
+        # Could be a fallback (hash or numeric ID)
+        print(f"  ⚠ ETag is not in UUID format (may be fallback): {etag}")
+        print("    This is acceptable but UUID format is preferred")
+    else:
+        print(f"  ✓ ETag appears to be in UUID format: {etag}")
 
-    # Verify hash part is non-empty (can be hex, base64, or any format)
-    # Different backends use different hash formats:
-    # - Local backend: hex (MD5)
-    # - Drime backend: base64 or numeric ID
-    # - AWS S3: hex (MD5) or multipart format
-    if not hash_part:
-        return False, "Hash part is empty"
-
-    # Verify size part is numeric
-    try:
-        size = int(size_part)
-    except ValueError:
-        return False, f"Size part '{size_part}' is not numeric"
-
-    # Verify size matches
-    if size != len(test_data):
-        return (
-            False,
-            f"Size in ETag ({size}) doesn't match actual size ({len(test_data)})",
-        )
-
-    print(f"  ✓ ETag format is correct: hash={hash_part[:16]}..., size={size}")
     return True, "ETag format is valid"
 
 
@@ -214,18 +196,14 @@ def test_etag_changes(s3_client, bucket_name: str) -> tuple[bool, str]:
 
     response_v1 = s3_client.head_object(Bucket=bucket_name, Key=test_key)
     etag_v1 = response_v1["ETag"].strip('"')
-    hash_v1, size_v1 = etag_v1.split("-")
     print(f"    ETag v1: {etag_v1}")
-    print(f"      → hash: {hash_v1[:16]}..., size: {size_v1}")
 
     print(f"    Uploading v2: '{data_v2.decode()}' ({len(data_v2)} bytes)")
     s3_client.put_object(Bucket=bucket_name, Key=test_key, Body=data_v2)
 
     response_v2 = s3_client.head_object(Bucket=bucket_name, Key=test_key)
     etag_v2 = response_v2["ETag"].strip('"')
-    hash_v2, size_v2 = etag_v2.split("-")
     print(f"    ETag v2: {etag_v2}")
-    print(f"      → hash: {hash_v2[:16]}..., size: {size_v2}")
 
     if etag_v1 == etag_v2:
         return (
@@ -233,16 +211,7 @@ def test_etag_changes(s3_client, bucket_name: str) -> tuple[bool, str]:
             "CRITICAL: ETag did not change despite content change! (same size case)",
         )
 
-    if size_v1 != size_v2:
-        return (
-            False,
-            f"Unexpected: sizes differ ({size_v1} vs {size_v2}) but should be same",
-        )
-
-    if hash_v1 == hash_v2:
-        return False, "CRITICAL: Hash did not change despite content change!"
-
-    print("    ✓ ETag changed correctly (hash changed, size stayed same)")
+    print("    ✓ ETag changed correctly (UUID changed for new file)")
 
     # Test case 2: Different size, different content
     print("\n  Test 2b: Different size, different content")
@@ -253,9 +222,7 @@ def test_etag_changes(s3_client, bucket_name: str) -> tuple[bool, str]:
 
     response_v3 = s3_client.head_object(Bucket=bucket_name, Key=test_key)
     etag_v3 = response_v3["ETag"].strip('"')
-    hash_v3, size_v3 = etag_v3.split("-")
     print(f"    ETag v3: {etag_v3}")
-    print(f"      → hash: {hash_v3[:16]}..., size: {size_v3}")
 
     if etag_v2 == etag_v3:
         return (
@@ -263,16 +230,7 @@ def test_etag_changes(s3_client, bucket_name: str) -> tuple[bool, str]:
             "CRITICAL: ETag did not change despite content and size change!",
         )
 
-    if size_v2 == size_v3:
-        return (
-            False,
-            f"Unexpected: sizes same ({size_v2} vs {size_v3}) but should differ",
-        )
-
-    if hash_v2 == hash_v3:
-        return False, "Hash did not change despite content change!"
-
-    print("    ✓ ETag changed correctly (both hash and size changed)")
+    print("    ✓ ETag changed correctly (UUID changed for new file)")
 
     # Verify we can retrieve the correct content
     print("\n  Verifying content integrity...")
@@ -324,17 +282,6 @@ def test_etag_consistency(s3_client, bucket_name: str) -> tuple[bool, str]:
     # All queries should return the same ETag
     if len(set(etags)) != 1:
         return False, f"ETag changed between queries: {etags}"
-
-    # Verify size is consistent in ETag
-    if "-" in etags[0]:
-        hash_part, size_part = etags[0].split("-")
-        if int(size_part) != len(test_data):
-            return (
-                False,
-                f"Size in ETag ({size_part}) doesn't match "
-                f"actual size ({len(test_data)})",
-            )
-        print(f"  ✓ Size in ETag is correct: {size_part} bytes")
 
     print("  ✓ ETag is stable across repeated queries")
     return True, "ETag is stable for same file"
@@ -410,21 +357,6 @@ def test_rclone_sync_scenario(s3_client, bucket_name: str) -> tuple[bool, str]:
 
     print("    ✓ Remote file has correct content")
 
-    # Step 6: Verify ETag format
-    print("\n  Step 6: Verify ETag format")
-    if "-" not in etag_after_sync:
-        return False, f"ETag not in hash-size format: {etag_after_sync}"
-
-    hash_part, size_part = etag_after_sync.split("-")
-    if int(size_part) != len(local_file_v2):
-        return (
-            False,
-            f"Size in ETag ({size_part}) doesn't match "
-            f"file size ({len(local_file_v2)})",
-        )
-
-    print(f"    ✓ ETag format correct: {hash_part[:16]}...-{size_part}")
-
     print("\n  ✓ rclone sync workflow would work correctly!")
     return True, "rclone sync scenario works perfectly"
 
@@ -469,10 +401,6 @@ def test_boto3_accepts_etag(s3_client, bucket_name: str) -> tuple[bool, str]:
         etag = found_files[key]
         print(f"    {key}: {etag}")
 
-        # Verify it's in hash-size format
-        if "-" not in etag:
-            return False, f"ETag for {key} is not in hash-size format"
-
     # Download files and verify
     print("  Downloading and verifying files...")
     for key, original_data in test_files.items():
@@ -481,16 +409,6 @@ def test_boto3_accepts_etag(s3_client, bucket_name: str) -> tuple[bool, str]:
 
         if downloaded_data != original_data:
             return False, f"Downloaded content for {key} doesn't match"
-
-        etag = response["ETag"].strip('"')
-        # Verify size in ETag matches
-        size_in_etag = int(etag.split("-")[1])
-        if size_in_etag != len(original_data):
-            return (
-                False,
-                f"Size in ETag ({size_in_etag}) doesn't match "
-                f"actual size ({len(original_data)})",
-            )
 
     print("  ✓ boto3 accepts ETags and file operations work correctly")
     return True, "boto3 works with non-MD5 ETags"
@@ -535,8 +453,8 @@ def test_list_objects_performance(s3_client, bucket_name: str) -> tuple[bool, st
     # Verify all files have ETags
     for obj in response["Contents"]:
         etag = obj["ETag"].strip('"')
-        if "-" not in etag:
-            return False, f"File {obj['Key']} has invalid ETag format"
+        if not etag:
+            return False, f"File {obj['Key']} has empty ETag"
 
     # If listing takes > 100ms per file, something is wrong (likely downloading)
     avg_time_per_file = list_time / num_listed
@@ -559,9 +477,9 @@ def run_tests() -> int:
     """
     print_header("DRIME ETAG FORMAT TEST")
 
-    print("This test verifies the new hash+size ETag format for Drime backend.")
+    print("This test verifies the UUID ETag format for Drime backend.")
     print("It will:")
-    print("  1. Verify ETags are in {hash}-{size} format")
+    print("  1. Verify ETags are in UUID format")
     print("  2. Test that ETags change when files change (CRITICAL)")
     print("  3. Verify ETag stability (repeated queries)")
     print("  4. Simulate rclone sync workflow (CRITICAL)")
@@ -638,7 +556,7 @@ def run_tests() -> int:
         print_header("FINAL RESULT")
         if all_passed:
             print("✓ ALL TESTS PASSED")
-            print("\nThe new hash+size ETag format is working correctly!")
+            print("\nThe UUID ETag format is working correctly!")
             print("Drime backend is S3-compatible with non-MD5 ETags.")
             return 0
         else:
