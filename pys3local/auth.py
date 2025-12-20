@@ -102,6 +102,9 @@ def verify_signature_v4(
     try:
         # Parse authorization header
         if not authorization_header.startswith("AWS4-HMAC-SHA256 "):
+            logger.debug(
+                "SigV4: Authorization header doesn't start with AWS4-HMAC-SHA256"
+            )
             return False
 
         auth_parts = {}
@@ -115,6 +118,9 @@ def verify_signature_v4(
         signed_headers_str = auth_parts.get("SignedHeaders", "")
 
         if not all([credential, signature, signed_headers_str]):
+            logger.debug(
+                f"SigV4: Missing auth parts - Credential: {bool(credential)}, Signature: {bool(signature)}, SignedHeaders: {bool(signed_headers_str)}"
+            )
             return False
 
         # Type narrowing - all values are now non-None
@@ -125,17 +131,22 @@ def verify_signature_v4(
         # Parse credential
         cred_parts = credential.split("/")
         if len(cred_parts) != 5:
+            logger.debug(f"SigV4: Invalid credential format: {credential}")
             return False
 
         cred_access_key, datestamp, cred_region, service, aws_request = cred_parts
 
         # Verify access key
         if cred_access_key != access_key:
+            logger.debug(
+                f"SigV4: Access key mismatch: {cred_access_key} != {access_key}"
+            )
             return False
 
         # Get required headers
         amz_date = headers.get("x-amz-date")
         if not amz_date:
+            logger.debug("SigV4: Missing x-amz-date header")
             return False
 
         # Create canonical request
@@ -165,17 +176,24 @@ def verify_signature_v4(
             ]
         )
 
+        logger.debug(f"SigV4 canonical request:\n{canonical_request}")
+
         # Create string to sign
         algorithm = "AWS4-HMAC-SHA256"
         credential_scope = f"{datestamp}/{cred_region}/{service}/aws4_request"
+        canonical_request_hash = hashlib.sha256(
+            canonical_request.encode("utf-8")
+        ).hexdigest()
         string_to_sign = "\n".join(
             [
                 algorithm,
                 amz_date,
                 credential_scope,
-                hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+                canonical_request_hash,
             ]
         )
+
+        logger.debug(f"SigV4 string to sign:\n{string_to_sign}")
 
         # Calculate signature
         signing_key = get_signature_key(secret_key, datestamp, cred_region, service)
@@ -183,11 +201,17 @@ def verify_signature_v4(
             signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
+        logger.debug(f"SigV4 calculated signature: {calculated_signature}")
+        logger.debug(f"SigV4 provided signature: {signature}")
+
         # Compare signatures
-        return hmac.compare_digest(calculated_signature, signature)
+        is_valid = hmac.compare_digest(calculated_signature, signature)
+        if not is_valid:
+            logger.debug("SigV4: Signature mismatch")
+        return is_valid
 
     except Exception as e:
-        logger.error(f"Error verifying SigV4: {e}")
+        logger.error(f"Error verifying SigV4: {e}", exc_info=True)
         return False
 
 

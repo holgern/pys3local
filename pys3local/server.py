@@ -149,11 +149,16 @@ async def _verify_auth(request: Request) -> bool:
 
     # Check for Signature V4
     if auth_header.startswith("AWS4-HMAC-SHA256"):
+        logger.debug("Detected AWS Signature V4 authentication")
         # Convert headers to lowercase dict
         headers = {k.lower(): v for k, v in request.headers.items()}
 
         # Get payload hash
         payload_hash = headers.get("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+
+        logger.debug(f"SigV4 request: {request.method} {request.url.path}")
+        logger.debug(f"SigV4 payload hash: {payload_hash}")
+        logger.debug(f"SigV4 auth header: {auth_header}")
 
         is_valid = auth.verify_signature_v4(
             access_key=access_key,
@@ -167,7 +172,9 @@ async def _verify_auth(request: Request) -> bool:
             authorization_header=auth_header,
         )
         if not is_valid:
+            logger.warning("Signature V4 verification failed")
             raise AccessDenied()
+        logger.debug("Signature V4 verified successfully")
         return True
 
     # Check for Signature V2 (older AWS signature format)
