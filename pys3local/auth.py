@@ -107,11 +107,24 @@ def verify_signature_v4(
             )
             return False
 
+        logger.debug(f"SigV4: Full authorization header: {authorization_header}")
+
         auth_parts = {}
-        for part in authorization_header[17:].split(", "):
+        # Split by ", " but be careful with spaces
+        parts_str = authorization_header[17:]  # Remove "AWS4-HMAC-SHA256 "
+        logger.debug(f"SigV4: Parsing parts from: {parts_str}")
+
+        # Try different splitting strategies
+        # Format can be: "Credential=xxx, SignedHeaders=yyy, Signature=zzz"
+        # Or with spaces: "Credential = xxx, SignedHeaders = yyy, Signature = zzz"
+        for part in parts_str.split(","):
+            part = part.strip()  # Remove leading/trailing spaces
             if "=" in part:
                 key, value = part.split("=", 1)
+                key = key.strip()
+                value = value.strip()
                 auth_parts[key] = value
+                logger.debug(f"SigV4: Found auth part: {key}={value[:50]}...")
 
         credential = auth_parts.get("Credential")
         signature = auth_parts.get("Signature")
@@ -162,9 +175,21 @@ def verify_signature_v4(
 
         # Create canonical headers
         signed_headers = sorted(signed_headers_str.split(";"))
+        logger.debug(f"SigV4: Signed headers list: {signed_headers}")
+        logger.debug(f"SigV4: Available headers: {list(headers.keys())}")
+
         canonical_headers = "".join(
             f"{header}:{headers.get(header, '').strip()}\n" for header in signed_headers
         )
+
+        # Debug: show which headers are missing
+        for header in signed_headers:
+            if header not in headers:
+                logger.warning(
+                    f"SigV4: Signed header '{header}' not found in request headers!"
+                )
+            else:
+                logger.debug(f"SigV4: Header '{header}' = '{headers[header][:50]}...'")
 
         # Build canonical request
         canonical_request = "\n".join(

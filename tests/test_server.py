@@ -551,3 +551,344 @@ def test_server_sigv2_authentication_failure(tmp_path):
     # Should fail with AccessDenied
     assert response.status_code == 403  # AccessDenied
     assert b"AccessDenied" in response.content
+
+
+def test_server_sigv4_authentication(tmp_path):
+    """Test AWS Signature Version 4 authentication."""
+    import hmac
+    from datetime import datetime
+
+    from pys3local.auth import get_signature_key
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+    region = "us-east-1"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        no_auth=False,  # Authentication required
+    )
+
+    client = TestClient(app)
+
+    # Build Signature V4 authorization header
+    http_method = "GET"
+    canonical_uri = "/test-bucket"
+    canonical_querystring = ""
+
+    # Use current timestamp
+    now = datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+
+    # Payload hash (empty for GET)
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    # Create canonical headers
+    host = "testserver"
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+
+    # Create canonical request
+    canonical_request = "\n".join(
+        [
+            http_method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+
+    # Create string to sign
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            algorithm,
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+
+    # Calculate signature
+    signing_key = get_signature_key(secret_key, datestamp, region, "s3")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    # Build authorization header
+    credential = f"{access_key}/{datestamp}/{region}/s3/aws4_request"
+    auth_header = (
+        f"AWS4-HMAC-SHA256 "
+        f"Credential={credential}, "
+        f"SignedHeaders={signed_headers}, "
+        f"Signature={signature}"
+    )
+
+    # Make request with Signature V4
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Host": host,
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+
+    # Should succeed with proper authentication
+    assert response.status_code == 200
+
+
+def test_server_sigv4_authentication_with_spaces(tmp_path):
+    """Test AWS Signature Version 4 with spaces
+    around equals signs (S3 Browser style)."""
+    import hmac
+    from datetime import datetime
+
+    from pys3local.auth import get_signature_key
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+    region = "us-east-1"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        no_auth=False,
+    )
+
+    client = TestClient(app)
+
+    http_method = "GET"
+    canonical_uri = "/test-bucket"
+    canonical_querystring = ""
+
+    now = datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    host = "testserver"
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+
+    canonical_request = "\n".join(
+        [
+            http_method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            algorithm,
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+
+    signing_key = get_signature_key(secret_key, datestamp, region, "s3")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    credential = f"{access_key}/{datestamp}/{region}/s3/aws4_request"
+
+    # Test with spaces around equals signs (S3 Browser style)
+    auth_header = (
+        f"AWS4-HMAC-SHA256 "
+        f"Credential = {credential}, "
+        f"SignedHeaders = {signed_headers}, "
+        f"Signature = {signature}"
+    )
+
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Host": host,
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+
+    # Should succeed even with spaces
+    assert response.status_code == 200
+
+
+def test_server_sigv4_authentication_no_spaces_after_comma(tmp_path):
+    """Test AWS Signature Version 4 with no spaces after commas."""
+    import hmac
+    from datetime import datetime
+
+    from pys3local.auth import get_signature_key
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+    region = "us-east-1"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        no_auth=False,
+    )
+
+    client = TestClient(app)
+
+    http_method = "GET"
+    canonical_uri = "/test-bucket"
+    canonical_querystring = ""
+
+    now = datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    host = "testserver"
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+
+    canonical_request = "\n".join(
+        [
+            http_method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            algorithm,
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+
+    signing_key = get_signature_key(secret_key, datestamp, region, "s3")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    credential = f"{access_key}/{datestamp}/{region}/s3/aws4_request"
+
+    # Test without spaces after commas
+    auth_header = (
+        f"AWS4-HMAC-SHA256 "
+        f"Credential={credential},"
+        f"SignedHeaders={signed_headers},"
+        f"Signature={signature}"
+    )
+
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Host": host,
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+
+    # Should succeed even without spaces after commas
+    assert response.status_code == 200
+
+
+def test_server_sigv4_authentication_failure(tmp_path):
+    """Test AWS Signature Version 4 authentication failure with wrong signature."""
+    from datetime import datetime
+
+    provider = LocalStorageProvider(base_path=tmp_path, readonly=False)
+    provider.create_bucket("test-bucket")
+
+    access_key = "test-access-key"
+    secret_key = "test-secret-key"
+    region = "us-east-1"
+
+    app = create_s3_app(
+        provider=provider,
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        no_auth=False,
+    )
+
+    client = TestClient(app)
+
+    now = datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    # Use wrong signature
+    credential = f"{access_key}/{datestamp}/{region}/s3/aws4_request"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    wrong_signature = "0" * 64  # Invalid signature
+
+    auth_header = (
+        f"AWS4-HMAC-SHA256 "
+        f"Credential={credential}, "
+        f"SignedHeaders={signed_headers}, "
+        f"Signature={wrong_signature}"
+    )
+
+    response = client.get(
+        "/test-bucket",
+        headers={
+            "Authorization": auth_header,
+            "Host": "testserver",
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+
+    # Should fail with AccessDenied
+    assert response.status_code == 403
+    assert b"AccessDenied" in response.content

@@ -549,7 +549,8 @@ Signature V2 and V4.
    - `"Access key mismatch"` (if credentials don't match)
 
 **Note:** Both AWS Signature V2 and V4 are fully supported. The server will
-automatically detect which version the client is using.
+automatically detect which version the client is using and supports various
+authorization header formats from different S3 clients.
 
 ### Complete rclone Configuration Reference
 
