@@ -80,8 +80,11 @@ By default, pys3local uses a virtual "default" bucket. This simplifies backup to
 configuration and mirrors the behavior of drime-s3 gateway.
 
 ```bash
-# Start in default mode (only "default" bucket available)
+# Start in default mode with local backend
 pys3local serve --path /tmp/s3store --no-auth
+
+# Start in default mode with Drime backend
+pys3local serve --backend drime --no-auth
 
 # Use with rclone
 rclone lsd pys3local:              # Shows "default" bucket
@@ -94,8 +97,11 @@ rclone ls pys3local:default/
 Enable custom bucket creation with the `--allow-bucket-creation` flag:
 
 ```bash
-# Start in advanced mode (allows custom buckets)
+# Start in advanced mode (local backend)
 pys3local serve --path /srv/s3 --no-auth --allow-bucket-creation
+
+# Start in advanced mode (Drime backend)
+pys3local serve --backend drime --no-auth --allow-bucket-creation
 
 # Use with rclone
 rclone mkdir pys3local:mybucket
@@ -133,6 +139,9 @@ export DRIME_API_KEY="your-api-key"
 
 # Start server with Drime backend
 pys3local serve --backend drime --no-auth
+
+# Optionally specify a root folder for organization
+pys3local serve --backend drime --no-auth --root-folder backups/s3
 ```
 
 ### Using with rclone

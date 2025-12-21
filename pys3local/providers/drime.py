@@ -914,12 +914,32 @@ class DrimeStorageProvider(StorageProvider):
             tmp_path.write_bytes(data)
 
             try:
-                result = self.client.upload_file(
-                    tmp_path,
-                    parent_id=folder_id,
-                    workspace_id=self.workspace_id,
-                    relative_path=filename,
+                logger.debug(
+                    f"Uploading file: bucket_name={bucket_name!r}, key={key!r}, "
+                    f"folder_path={folder_path!r}, folder_id={folder_id}, "
+                    f"filename={filename!r}"
                 )
+
+                # For simple files (no nested folders in key),
+                # use upload_file_simple to avoid pydrime's folder path
+                # resolution which can fail with parent_id=None
+                if len(parts) == 1:
+                    # Simple file upload (no folders in key)
+                    result = self.client.upload_file_simple(
+                        tmp_path,
+                        relative_path=filename,
+                        workspace_id=self.workspace_id,
+                        parent_id=folder_id,
+                    )
+                else:
+                    # Nested file upload (has folders in key)
+                    # Use regular upload_file which handles folder creation
+                    result = self.client.upload_file(
+                        tmp_path,
+                        parent_id=folder_id,
+                        workspace_id=self.workspace_id,
+                        relative_path=filename,
+                    )
 
                 logger.info(f"Uploaded object: {bucket_name}/{key}")
 
@@ -963,7 +983,9 @@ class DrimeStorageProvider(StorageProvider):
         except NoSuchBucket:
             raise
         except Exception as e:
-            logger.error(f"Failed to upload object {bucket_name}/{key}: {e}")
+            logger.error(
+                f"Failed to upload object {bucket_name}/{key}: {e}", exc_info=True
+            )
             raise
 
     def get_object(self, bucket_name: str, key: str) -> S3Object:

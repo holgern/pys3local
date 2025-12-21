@@ -89,6 +89,7 @@ class BenchmarkConfig:
     # Drime settings
     workspace_id: int = 0
     drime_api_key: str = ""
+    root_folder: str = ""  # Optional root folder in Drime workspace
 
     # Bucket settings (fixed to "default" for this benchmark)
     bucket_name: str = "default"
@@ -172,7 +173,12 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
         raise RuntimeError("Failed to start pys3local server with Drime backend")
 
     print(f"  ✓ Server started in DEFAULT MODE (PID: {process.pid})")
-    print("  ✓ Using virtual 'default' bucket (no folder created in Drime)")
+    if config.root_folder:
+        print(
+            f"  ✓ Using virtual 'default' bucket → Drime folder: {config.root_folder}"
+        )
+    else:
+        print("  ✓ Using virtual 'default' bucket at Drime workspace root")
     return process
 
 
@@ -296,7 +302,10 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
         # NOTE: We do NOT create a bucket - 'default' bucket is auto-created
         print_step("Using virtual 'default' bucket (auto-created)...")
-        print("  ✓ 'default' bucket is virtual (no folder created in Drime)")
+        if config.root_folder:
+            print(f"  ✓ 'default' bucket maps to Drime folder: {config.root_folder}")
+        else:
+            print("  ✓ 'default' bucket uses Drime workspace root")
         bucket_create_time = 0.0  # Instant, as it's virtual
 
         # Upload files to 'default' bucket
