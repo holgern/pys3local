@@ -77,16 +77,6 @@ def create_s3_app(
     app.state.no_auth = no_auth
     app.state.allow_bucket_creation = allow_bucket_creation
 
-    # Ensure default bucket exists (needed for both modes)
-    # In default mode: it's a virtual bucket but we create it for provider compatibility
-    # In advanced mode: it's a real bucket that gets created
-    try:
-        if not provider.bucket_exists(DEFAULT_BUCKET):
-            provider.create_bucket(DEFAULT_BUCKET)
-            logger.info(f"Created '{DEFAULT_BUCKET}' bucket")
-    except Exception as e:
-        logger.warning(f"Could not create default bucket: {e}")
-
     # Add global exception handler for S3 errors
     @app.exception_handler(S3Error)
     async def s3_error_handler(request: Request, exc: S3Error) -> Response:
@@ -320,27 +310,27 @@ def _resolve_storage_path(
     Args:
         bucket_name: S3 bucket name
         key: S3 object key
-        allow_bucket_creation: Whether bucket directories are real
+        allow_bucket_creation: Whether custom buckets are allowed
 
     Returns:
         Tuple of (bucket_for_provider, key_for_provider)
-        - In default mode (virtual bucket): For "default" bucket,
-          use it as-is but files stored at root
-        - In advanced mode (real buckets): Returns (bucket_name, key)
+        - In default mode (virtual): "default" bucket is stripped, files
+          stored at root (bucket="")
+        - In advanced mode: Returns actual bucket_name and key
 
-    Note: In default mode, we still pass "default" to the provider to
-    maintain compatibility, but the provider should treat it as a virtual
-    bucket (no directory creation).
+    Note: In default mode, the "default" bucket is virtual and files are
+    stored at the root level without a bucket directory (empty string bucket).
+    In advanced mode, buckets are real directories.
     """
     if not bucket_name:
         bucket_name = DEFAULT_BUCKET
 
-    if not key:
-        return bucket_name, None
+    # In default mode with "default" bucket, use empty string (root level)
+    if not allow_bucket_creation and bucket_name == DEFAULT_BUCKET:
+        # Virtual mode: no bucket directory, files at root
+        return "", key
 
-    # Both modes use bucket_name - the difference is in how providers handle it
-    # In default mode, providers should not create bucket directories
-    # In advanced mode, providers create actual bucket directories
+    # Advanced mode or non-default bucket: use actual bucket
     return bucket_name, key
 
 

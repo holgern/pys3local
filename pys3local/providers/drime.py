@@ -605,6 +605,58 @@ class DrimeStorageProvider(StorageProvider):
 
         return result_objects
 
+    def _list_immediate_children(
+        self, folder_id: int | None, prefix: str = ""
+    ) -> tuple[list[tuple[str, FileEntry]], list[str]]:
+        """List only immediate children (files and folders) without recursion.
+
+        Args:
+            folder_id: Folder ID to list from (None for root)
+            prefix: Optional prefix to filter by
+
+        Returns:
+            Tuple of (files, folder_names) where:
+            - files: List of tuples (key, entry) for files only
+            - folder_names: List of folder names
+        """
+        from pydrime.models import FileEntriesResult
+
+        params: dict[str, Any] = {
+            "workspace_id": self.workspace_id,
+            "per_page": 1000,
+        }
+        if folder_id is not None:
+            params["parent_ids"] = [folder_id]
+
+        logger.debug(
+            f"Listing immediate children from folder_id={folder_id}, prefix={prefix}"
+        )
+        result = self.client.get_file_entries(**params)
+        file_entries = FileEntriesResult.from_api_response(result)
+
+        # Filter to only include immediate children
+        entries = file_entries.entries
+        if folder_id is None:
+            entries = [e for e in entries if e.parent_id is None or e.parent_id == 0]
+        else:
+            entries = [e for e in entries if e.parent_id == folder_id]
+
+        logger.debug(f"Found {len(entries)} immediate children")
+
+        # Separate files and folders, apply prefix filter
+        files = []
+        folders = []
+        for entry in entries:
+            if prefix and not entry.name.startswith(prefix):
+                continue
+
+            if entry.is_folder:
+                folders.append(entry.name)
+            else:
+                files.append((entry.name, entry))
+
+        return files, folders
+
     def list_objects(
         self,
         bucket_name: str,
@@ -618,10 +670,109 @@ class DrimeStorageProvider(StorageProvider):
             # Get bucket folder ID
             folder_id = self._get_folder_id_by_path(bucket_name)
 
-            if folder_id is None:
+            # None is valid for root level (empty bucket_name)
+            # Only raise NoSuchBucket if looking for a specific bucket that
+            # doesn't exist
+            if folder_id is None and bucket_name:
                 raise NoSuchBucket(bucket_name)
 
-            # Collect all objects recursively with full paths
+            # Optimization: When delimiter is present, only list immediate children
+            # This avoids recursively scanning the entire tree
+            if delimiter:
+                # Handle prefix - if it contains delimiter, we need to navigate
+                # to that folder
+                if prefix and delimiter in prefix:
+                    # Navigate to the prefix folder
+                    prefix_parts = prefix.rstrip(delimiter).split(delimiter)
+                    prefix_folder = (
+                        delimiter.join(prefix_parts[:-1])
+                        if len(prefix_parts) > 1
+                        else ""
+                    )
+                    remaining_prefix = prefix_parts[-1] if prefix_parts else ""
+
+                    # Get folder for the prefix path
+                    if prefix_folder:
+                        folder_path = (
+                            f"{bucket_name}/{prefix_folder}"
+                            if bucket_name
+                            else prefix_folder
+                        )
+                        folder_id = self._get_folder_id_by_path(folder_path)
+                        if folder_id is None and folder_path:
+                            # Prefix folder doesn't exist
+                            return {
+                                "contents": [],
+                                "common_prefixes": [],
+                                "is_truncated": False,
+                                "next_marker": "",
+                            }
+                else:
+                    remaining_prefix = prefix
+
+                # List immediate children only
+                files, folders = self._list_immediate_children(
+                    folder_id, remaining_prefix
+                )
+
+                # Build results
+                contents = []
+                common_prefixes: set[str] = set()
+
+                # Add files to contents
+                for key, entry in files:
+                    full_key = (
+                        f"{prefix.rstrip(delimiter)}{delimiter}{key}"
+                        if prefix and not remaining_prefix
+                        else key
+                    )
+                    if marker and full_key <= marker:
+                        continue
+
+                    obj = S3Object(
+                        key=full_key,
+                        size=entry.file_size or 0,
+                        last_modified=self._parse_datetime(
+                            entry.updated_at or entry.created_at
+                        ),
+                        etag=self._get_etag_for_entry(entry, bucket_name, full_key),
+                        content_type=entry.mime or "application/octet-stream",
+                    )
+                    contents.append(obj)
+
+                # Add folders as common prefixes
+                for folder_name in folders:
+                    if prefix:
+                        prefix_stripped = prefix.rstrip(delimiter)
+                        common_prefix = (
+                            f"{prefix_stripped}{delimiter}{folder_name}{delimiter}"
+                        )
+                    else:
+                        common_prefix = f"{folder_name}{delimiter}"
+                    common_prefixes.add(common_prefix)
+
+                # Apply max_keys limit
+                all_items = contents + [None] * len(common_prefixes)
+                is_truncated = len(all_items) > max_keys
+                if is_truncated:
+                    contents = contents[:max_keys]
+                    next_marker = contents[-1].key if contents else ""
+                else:
+                    next_marker = ""
+
+                logger.debug(
+                    f"Listed {len(contents)} objects, {len(common_prefixes)} prefixes "
+                    f"in {bucket_name or 'root'}"
+                )
+
+                return {
+                    "contents": contents,
+                    "common_prefixes": sorted(common_prefixes),
+                    "is_truncated": is_truncated,
+                    "next_marker": next_marker,
+                }
+
+            # No delimiter - collect all objects recursively (old behavior)
             all_objects = self._collect_all_objects(folder_id)
 
             # Extract keys for filtering
@@ -745,10 +896,15 @@ class DrimeStorageProvider(StorageProvider):
             # Create nested folders if needed
             if len(parts) > 1:
                 subfolder = "/".join(parts[:-1])
-                folder_path = f"{bucket_name}/{subfolder}"
+                # Handle empty bucket_name (root level)
+                if bucket_name:
+                    folder_path = f"{bucket_name}/{subfolder}"
+                else:
+                    folder_path = subfolder
 
             folder_id = self._get_folder_id_by_path(folder_path, create=True)
 
+            # None is valid for root level (empty bucket_name/folder_path)
             if folder_id is None and folder_path:
                 raise NoSuchBucket(bucket_name)
 
@@ -820,12 +976,18 @@ class DrimeStorageProvider(StorageProvider):
 
             if len(parts) > 1:
                 subfolder = "/".join(parts[:-1])
-                folder_path = f"{bucket_name}/{subfolder}"
+                # Handle empty bucket_name (root level)
+                if bucket_name:
+                    folder_path = f"{bucket_name}/{subfolder}"
+                else:
+                    folder_path = subfolder
 
             # Get folder ID
             folder_id = self._get_folder_id_by_path(folder_path)
 
-            if folder_id is None and folder_path != bucket_name:
+            # None is valid for root level (empty bucket_name/folder_path)
+            # Only raise error if we have a specific folder path that doesn't exist
+            if folder_id is None and folder_path:
                 raise NoSuchKey(key)
 
             # Find the file entry
@@ -870,12 +1032,17 @@ class DrimeStorageProvider(StorageProvider):
 
             if len(parts) > 1:
                 subfolder = "/".join(parts[:-1])
-                folder_path = f"{bucket_name}/{subfolder}"
+                # Handle empty bucket_name (root level)
+                if bucket_name:
+                    folder_path = f"{bucket_name}/{subfolder}"
+                else:
+                    folder_path = subfolder
 
             # Get folder ID
             folder_id = self._get_folder_id_by_path(folder_path)
 
-            if folder_id is None and folder_path != bucket_name:
+            # None is valid for root level (empty bucket_name/folder_path)
+            if folder_id is None and folder_path:
                 raise NoSuchKey(key)
 
             # Find the file entry
@@ -914,12 +1081,17 @@ class DrimeStorageProvider(StorageProvider):
 
             if len(parts) > 1:
                 subfolder = "/".join(parts[:-1])
-                folder_path = f"{bucket_name}/{subfolder}"
+                # Handle empty bucket_name (root level)
+                if bucket_name:
+                    folder_path = f"{bucket_name}/{subfolder}"
+                else:
+                    folder_path = subfolder
 
             # Get folder ID
             folder_id = self._get_folder_id_by_path(folder_path)
 
-            if folder_id is None and folder_path != bucket_name:
+            # None is valid for root level (empty bucket_name/folder_path)
+            if folder_id is None and folder_path:
                 raise NoSuchKey(key)
 
             # Find the file entry

@@ -66,24 +66,30 @@ class LocalStorageProvider(StorageProvider):
         """Get path to bucket directory.
 
         Args:
-            bucket_name: Bucket name
+            bucket_name: Bucket name (empty string means root level)
 
         Returns:
-            Path to bucket directory
+            Path to bucket directory (or base_path if bucket_name is empty)
         """
+        if not bucket_name:
+            # Empty bucket name = root level (for virtual "default" bucket)
+            return self.base_path
         return self.base_path / bucket_name
 
     def _get_object_path(self, bucket_name: str, key: str) -> Path:
         """Get path to object file.
 
         Args:
-            bucket_name: Bucket name
+            bucket_name: Bucket name (empty string means root level)
             key: Object key
 
         Returns:
             Path to object file
         """
         bucket_path = self._get_bucket_path(bucket_name)
+        # If bucket_name is empty (root level), don't use "objects" subdirectory
+        if not bucket_name:
+            return bucket_path / key
         return bucket_path / "objects" / key
 
     def _validate_bucket_name(self, bucket_name: str) -> None:
@@ -95,8 +101,9 @@ class LocalStorageProvider(StorageProvider):
         Raises:
             InvalidBucketName: If bucket name is invalid
         """
+        # Allow empty bucket name (for virtual "default" bucket at root level)
         if not bucket_name:
-            raise InvalidBucketName(bucket_name)
+            return
 
         if len(bucket_name) < 3 or len(bucket_name) > 63:
             raise InvalidBucketName(bucket_name)
@@ -207,6 +214,10 @@ class LocalStorageProvider(StorageProvider):
             BucketAlreadyExists: If bucket already exists
             InvalidBucketName: If bucket name is invalid
         """
+        # Reject empty bucket name for creation (only allowed for virtual reads)
+        if not bucket_name:
+            raise InvalidBucketName(bucket_name)
+
         self._validate_bucket_name(bucket_name)
 
         bucket_path = self._get_bucket_path(bucket_name)
@@ -262,11 +273,14 @@ class LocalStorageProvider(StorageProvider):
         """Check if a bucket exists.
 
         Args:
-            bucket_name: Name of the bucket
+            bucket_name: Name of the bucket (empty string = root level)
 
         Returns:
             True if bucket exists
         """
+        # Empty bucket name = root level always exists
+        if not bucket_name:
+            return True
         bucket_path = self._get_bucket_path(bucket_name)
         return bucket_path.exists() and bucket_path.is_dir()
 

@@ -1,6 +1,7 @@
 """Command-line interface for pys3local."""
 
 import logging
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +20,12 @@ from pys3local.constants import (
 )
 
 console = Console()
+
+
+def signal_handler(signum, frame):
+    """Handle Ctrl+C gracefully."""
+    console.print("\n[yellow]Server stopped by user[/yellow]")
+    sys.exit(0)
 
 
 @click.group(invoke_without_command=True)
@@ -237,17 +244,25 @@ def serve(
 
         console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
+        # Set up signal handler for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         # Configure uvicorn for better compatibility with S3 clients like rclone
         # Note: h11 backend is used automatically when httptools is not installed
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            log_level="error" if not debug else "info",
-            server_header=False,  # Don't send Server header for compatibility
-            timeout_keep_alive=75,  # Standard keep-alive timeout
-            access_log=debug,  # Only show access log in debug mode
-        )
+        try:
+            uvicorn.run(
+                app,
+                host=host,
+                port=port,
+                log_level="error" if not debug else "info",
+                server_header=False,  # Don't send Server header for compatibility
+                timeout_keep_alive=75,  # Standard keep-alive timeout
+                access_log=debug,  # Only show access log in debug mode
+            )
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Server stopped by user[/yellow]")
+            sys.exit(0)
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
