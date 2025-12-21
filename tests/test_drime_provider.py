@@ -346,7 +346,8 @@ def test_put_object_simple(drime_provider, mock_drime_client, mock_file_entry):
     ]
 
     mock_drime_client.get_file_entries.return_value = {"data": []}
-    mock_drime_client.upload_file.return_value = {
+    # Mock upload_file_simple (used for simple uploads without nested paths)
+    mock_drime_client.upload_file_simple.return_value = {
         "id": 123,
         "name": "file.txt",
         "file_size": 11,
@@ -360,7 +361,7 @@ def test_put_object_simple(drime_provider, mock_drime_client, mock_file_entry):
 
     assert result.key == "file.txt"
     assert result.size == 11
-    mock_drime_client.upload_file.assert_called_once()
+    mock_drime_client.upload_file_simple.assert_called_once()
 
 
 def test_put_object_nested_path(drime_provider, mock_drime_client, mock_file_entry):
@@ -592,7 +593,8 @@ def test_copy_object(drime_provider, mock_drime_client, mock_file_entry):
 
     mock_drime_client.get_file_entries.return_value = {"data": []}
     mock_drime_client.get_file_content.return_value = b"hello world"
-    mock_drime_client.upload_file.return_value = {
+    # Copy uses upload_file_simple for simple file names
+    mock_drime_client.upload_file_simple.return_value = {
         "id": 456,
         "name": "dest.txt",
         "file_size": 11,
@@ -609,7 +611,7 @@ def test_copy_object(drime_provider, mock_drime_client, mock_file_entry):
     assert result.key == "dest.txt"
     assert result.size == 11
     mock_drime_client.get_file_content.assert_called_once_with("abc123")
-    mock_drime_client.upload_file.assert_called_once()
+    mock_drime_client.upload_file_simple.assert_called_once()
 
 
 def test_object_exists(drime_provider, mock_drime_client, mock_file_entry):
