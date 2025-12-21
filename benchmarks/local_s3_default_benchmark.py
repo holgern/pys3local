@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Benchmark script for pys3local with local backend in DEFAULT MODE (virtual bucket).
+"""Benchmark script for pys3local with local backend in DEFAULT MODE.
 
-This script demonstrates the default bucket mode where only the 'default' bucket exists
-as a virtual bucket, and all files are stored at the root level without bucket directories.
+This script demonstrates the default bucket mode where only the 'default'
+bucket exists as a virtual bucket, and all files are stored at the root
+level without bucket directories.
 
 This script:
 1. Starts pys3local server in DEFAULT MODE (no --allow-bucket-creation flag)
@@ -151,7 +152,7 @@ def start_server(
         raise RuntimeError("Failed to start pys3local server")
 
     print(f"  ✓ Server started in DEFAULT MODE (PID: {process.pid})")
-    print(f"  ✓ Using virtual 'default' bucket (no bucket directories)")
+    print("  ✓ Using virtual 'default' bucket (no bucket directories)")
     return process
 
 
@@ -228,7 +229,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
         # NOTE: We do NOT create a bucket - 'default' bucket is auto-created
         print_step("Using virtual 'default' bucket (auto-created)...")
-        print(f"  ✓ 'default' bucket is virtual (no directory created)")
+        print("  ✓ 'default' bucket is virtual (no directory created)")
         bucket_create_time = 0.0  # Instant, as it's virtual
 
         # Upload files to 'default' bucket

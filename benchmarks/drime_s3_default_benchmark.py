@@ -172,7 +172,7 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
         raise RuntimeError("Failed to start pys3local server with Drime backend")
 
     print(f"  ✓ Server started in DEFAULT MODE (PID: {process.pid})")
-    print(f"  ✓ Using virtual 'default' bucket (no folder created in Drime)")
+    print("  ✓ Using virtual 'default' bucket (no folder created in Drime)")
     return process
 
 
@@ -296,7 +296,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
 
         # NOTE: We do NOT create a bucket - 'default' bucket is auto-created
         print_step("Using virtual 'default' bucket (auto-created)...")
-        print(f"  ✓ 'default' bucket is virtual (no folder created in Drime)")
+        print("  ✓ 'default' bucket is virtual (no folder created in Drime)")
         bucket_create_time = 0.0  # Instant, as it's virtual
 
         # Upload files to 'default' bucket
@@ -394,7 +394,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Benchmark pys3local with Drime backend in DEFAULT MODE (virtual bucket)",
+        description=("Benchmark pys3local with Drime backend in DEFAULT MODE"),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
