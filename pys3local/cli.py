@@ -86,6 +86,11 @@ def cli(ctx: click.Context) -> None:
     default=None,
     help="Root folder path for Drime backend (e.g., 'backups/s3')",
 )
+@click.option(
+    "--allow-bucket-creation",
+    is_flag=True,
+    help="Allow creation of custom buckets (default: only 'default' bucket allowed)",
+)
 def serve(
     path: str,
     listen: str,
@@ -97,6 +102,7 @@ def serve(
     backend: str,
     backend_config: Optional[str],
     root_folder: Optional[str],
+    allow_bucket_creation: bool,
 ) -> None:
     """Start the S3-compatible server."""
 
@@ -155,6 +161,17 @@ def serve(
         console.print(f"Secret Access Key: [cyan]{secret_access_key}[/cyan]")
         console.print(f"Region: [cyan]{region}[/cyan]")
 
+    # Display bucket mode
+    if allow_bucket_creation:
+        console.print("[yellow]Bucket mode: Advanced (custom buckets allowed)[/yellow]")
+        console.print("[dim]Buckets will be created as directories in storage[/dim]")
+    else:
+        console.print("[green]Bucket mode: Default (virtual 'default' bucket)[/green]")
+        console.print(
+            "[dim]Only 'default' bucket is available "
+            "(use --allow-bucket-creation for custom buckets)[/dim]"
+        )
+
     # Create and run server
     from pys3local.server import create_s3_app
 
@@ -165,6 +182,7 @@ def serve(
             secret_key=secret_access_key,
             region=region,
             no_auth=no_auth,
+            allow_bucket_creation=allow_bucket_creation,
         )
 
         console.print(f"\n[green]Starting S3 server at http://{host}:{port}/[/green]")
@@ -184,6 +202,15 @@ def serve(
             )
             console.print(f"region = {region}")
             console.print()
+            console.print("[dim]# Test the connection:[/dim]")
+            console.print(
+                "[dim]rclone lsd pys3local:  # Should show 'default' bucket[/dim]"
+            )
+            console.print(
+                "[dim]rclone ls pys3local:default/  "
+                "# List files in default bucket[/dim]"
+            )
+            console.print()
         else:
             console.print("\n[bold]rclone configuration:[/bold]")
             console.print("[dim]Add this to ~/.config/rclone/rclone.conf:[/dim]")
@@ -198,18 +225,26 @@ def serve(
             )
             console.print(f"region = {region}")
             console.print()
+            console.print("[dim]# Test the connection:[/dim]")
+            console.print(
+                "[dim]rclone lsd pys3local:  # Should show 'default' bucket[/dim]"
+            )
+            console.print(
+                "[dim]rclone ls pys3local:default/  "
+                "# List files in default bucket[/dim]"
+            )
+            console.print()
 
         console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
         # Configure uvicorn for better compatibility with S3 clients like rclone
-        # Use h11 backend explicitly for better HTTP/1.1 compliance
+        # Note: h11 backend is used automatically when httptools is not installed
         uvicorn.run(
             app,
             host=host,
             port=port,
-            log_level="error" if not debug else "debug",
-            http="h11",  # Use h11 for better HTTP/1.1 compatibility
-            server_header=False,  # Don't send Server header
+            log_level="error" if not debug else "info",
+            server_header=False,  # Don't send Server header for compatibility
             timeout_keep_alive=75,  # Standard keep-alive timeout
             access_log=debug,  # Only show access log in debug mode
         )

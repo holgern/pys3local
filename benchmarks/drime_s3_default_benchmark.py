@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Benchmark script for pys3local with local backend and boto3 S3 client.
+"""Benchmark script for pys3local with Drime backend in DEFAULT MODE (virtual bucket).
+
+This script demonstrates the default bucket mode where only the 'default' bucket exists
+as a virtual bucket, and all files are stored at the Drime workspace root level.
 
 This script:
-1. Starts pys3local server in the background with local backend
-2. Creates a directory with random test files
-3. Creates an S3 bucket
-4. Uploads all files to the bucket
-5. Downloads all files to a different directory
-6. Compares both directories
-7. Generates a performance report
-8. Cleans up all test data
+1. Prompts for Drime credentials (workspace_id, api_key)
+2. Starts pys3local server in DEFAULT MODE (no --allow-bucket-creation flag)
+3. Creates a directory with random test files
+4. Uses the virtual 'default' bucket (auto-created)
+5. Uploads all files to the default bucket
+6. Downloads all files to a different directory
+7. Compares both directories
+8. Generates a performance report
+9. Cleans up all test data
 """
 
 from __future__ import annotations
 
+import getpass
 import os
 import subprocess
 import sys
@@ -34,9 +39,7 @@ try:
     from .benchmark_common import (
         BenchmarkResult,
         cleanup_local_dirs,
-        cleanup_s3_bucket,
         compare_directories,
-        create_s3_bucket,
         create_test_files,
         download_files_from_s3,
         download_files_from_s3_parallel,
@@ -53,9 +56,7 @@ except ImportError:
     from benchmark_common import (  # type: ignore[import-not-found]
         BenchmarkResult,
         cleanup_local_dirs,
-        cleanup_s3_bucket,
         compare_directories,
-        create_s3_bucket,
         create_test_files,
         download_files_from_s3,
         download_files_from_s3_parallel,
@@ -85,28 +86,32 @@ class BenchmarkConfig:
     access_key: str = "test"
     secret_key: str = "test"
 
-    # Bucket settings
-    bucket_name: str = "benchmark-bucket"
+    # Drime settings
+    workspace_id: int = 0
+    drime_api_key: str = ""
 
-    # Parallel settings
+    # Bucket settings (fixed to "default" for this benchmark)
+    bucket_name: str = "default"
+
+    # Debug settings
+    verbose: bool = False
+
+    # Performance settings
     parallel: bool = False
     parallel_workers: int = 5
 
 
-def start_server(
-    config: BenchmarkConfig, data_dir: Path, log_file: Path
-) -> subprocess.Popen:
-    """Start pys3local server in the background.
+def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
+    """Start pys3local server with Drime backend in DEFAULT MODE.
 
     Args:
         config: Benchmark configuration
-        data_dir: Directory for server data
         log_file: Path to log file
 
     Returns:
         Process handle
     """
-    print_step("Starting pys3local server...")
+    print_step("Starting pys3local server with Drime backend in DEFAULT MODE...")
 
     listen_addr = f"{config.server_host}:{config.server_port}"
 
@@ -118,19 +123,32 @@ def start_server(
         "--listen",
         listen_addr,
         "--backend",
-        "local",
-        "--path",
-        str(data_dir),
+        "drime",
         "--no-auth",  # Disable auth for benchmark
-        "--allow-bucket-creation",  # Allow custom buckets for benchmark
+        # NOTE: No --allow-bucket-creation flag = DEFAULT MODE
     ]
 
+    # Add debug flag if verbose mode enabled
+    if config.verbose:
+        cmd.append("--debug")
+
+    # Set environment variables for Drime
+    env = os.environ.copy()
+    env["DRIME_API_KEY"] = config.drime_api_key
+    env["DRIME_WORKSPACE_ID"] = str(config.workspace_id)
+
     # Prepare subprocess arguments based on platform
-    log = log_file.open("w")
-    kwargs = {
-        "stdout": log,
-        "stderr": subprocess.STDOUT,
-    }
+    kwargs: dict = {"env": env}
+
+    # In verbose mode, show server output directly; otherwise log to file
+    if config.verbose:
+        print("  (Server output will be shown below)")
+        kwargs["stdout"] = None  # Inherit stdout
+        kwargs["stderr"] = None  # Inherit stderr
+    else:
+        log = log_file.open("w")
+        kwargs["stdout"] = log
+        kwargs["stderr"] = subprocess.STDOUT
 
     if hasattr(os, "setsid"):
         # Unix/Linux/macOS
@@ -142,16 +160,19 @@ def start_server(
     process = subprocess.Popen(cmd, **kwargs)
 
     # Wait for server to start
-    time.sleep(2)
+    wait_time = 5 if config.verbose else 3
+    time.sleep(wait_time)
 
     # Check if server is running
     if process.poll() is not None:
-        log.close()
-        with log_file.open() as f:
-            print(f"Server failed to start. Log:\n{f.read()}")
-        raise RuntimeError("Failed to start pys3local server")
+        if not config.verbose:
+            log.close()
+            with log_file.open() as f:
+                print(f"Server failed to start. Log:\n{f.read()}")
+        raise RuntimeError("Failed to start pys3local server with Drime backend")
 
-    print(f"  ✓ Server started (PID: {process.pid})")
+    print(f"  ✓ Server started in DEFAULT MODE (PID: {process.pid})")
+    print(f"  ✓ Using virtual 'default' bucket (no folder created in Drime)")
     return process
 
 
@@ -175,6 +196,49 @@ def create_s3_client(config: BenchmarkConfig):
     )
 
 
+def prompt_for_credentials() -> tuple[int, str]:
+    """Prompt user for Drime credentials.
+
+    Returns:
+        Tuple of (workspace_id, api_key)
+    """
+    print("\n" + "=" * 70)
+    print("DRIME CREDENTIALS")
+    print("=" * 70)
+    print("Please provide your Drime credentials to run the benchmark.")
+    print("These will be used to connect to your Drime workspace.\n")
+
+    # Try to get from environment first
+    workspace_id_str = os.environ.get("DRIME_WORKSPACE_ID", "")
+    api_key = os.environ.get("DRIME_API_KEY", "")
+
+    if workspace_id_str and api_key:
+        print("✓ Using credentials from environment variables")
+        return int(workspace_id_str), api_key
+
+    # Prompt for workspace ID
+    while True:
+        workspace_input = input("Workspace ID (default: 0): ").strip()
+        if not workspace_input:
+            workspace_id = 0
+            break
+        try:
+            workspace_id = int(workspace_input)
+            break
+        except ValueError:
+            print("  ✗ Invalid workspace ID. Please enter a number.")
+
+    # Prompt for API key
+    while True:
+        api_key = getpass.getpass("API Key: ").strip()
+        if api_key:
+            break
+        print("  ✗ API key cannot be empty.")
+
+    print()
+    return workspace_id, api_key
+
+
 def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
     """Run the complete benchmark.
 
@@ -187,18 +251,22 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
     if config is None:
         config = BenchmarkConfig()
 
-    print_header("PYS3LOCAL + BOTO3 S3 BENCHMARK")
+    # Prompt for credentials if not provided
+    if not config.drime_api_key:
+        workspace_id, api_key = prompt_for_credentials()
+        config.workspace_id = workspace_id
+        config.drime_api_key = api_key
+
+    print_header("PYS3LOCAL DEFAULT MODE BENCHMARK (DRIME BACKEND)")
 
     # Create temporary directories
-    temp_base = Path(tempfile.mkdtemp(prefix="pys3local_benchmark_"))
+    temp_base = Path(tempfile.mkdtemp(prefix="pys3local_drime_default_benchmark_"))
     source_dir = temp_base / "source"
     download_dir = temp_base / "download"
-    server_data_dir = temp_base / "server_data"
     log_file = temp_base / "server.log"
 
     source_dir.mkdir()
     download_dir.mkdir()
-    server_data_dir.mkdir()
 
     server_process = None
     s3_client = None
@@ -220,21 +288,18 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             config.num_subdirs,
         )
 
-        # Start server
-        server_process = start_server(config, server_data_dir, log_file)
+        # Start server in DEFAULT MODE
+        server_process = start_server(config, log_file)
 
         # Create S3 client
         s3_client = create_s3_client(config)
 
-        # Create bucket
-        success, bucket_create_time, error = create_s3_bucket(
-            s3_client, config.bucket_name
-        )
-        if not success:
-            error_msg = f"Bucket creation failed: {error}"
-            raise RuntimeError(error_msg)
+        # NOTE: We do NOT create a bucket - 'default' bucket is auto-created
+        print_step("Using virtual 'default' bucket (auto-created)...")
+        print(f"  ✓ 'default' bucket is virtual (no folder created in Drime)")
+        bucket_create_time = 0.0  # Instant, as it's virtual
 
-        # Upload files
+        # Upload files to 'default' bucket
         if config.parallel:
             success, upload_time, error = upload_files_to_s3_parallel(
                 s3_client, config.bucket_name, source_dir, config.parallel_workers
@@ -247,7 +312,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             error_msg = f"Upload failed: {error}"
             raise RuntimeError(error_msg)
 
-        # Download files
+        # Download files from 'default' bucket
         if config.parallel:
             success, download_time, error = download_files_from_s3_parallel(
                 s3_client, config.bucket_name, download_dir, config.parallel_workers
@@ -263,18 +328,30 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
         # Compare directories
         comparison_success, differences = compare_directories(source_dir, download_dir)
 
+        # Cleanup files from Drime (delete all uploaded files)
+        if s3_client:
+            print_step("Cleaning up files from Drime workspace...")
+            try:
+                # List all objects in default bucket
+                response = s3_client.list_objects_v2(Bucket=config.bucket_name)
+                if "Contents" in response:
+                    objects_to_delete = [
+                        {"Key": obj["Key"]} for obj in response["Contents"]
+                    ]
+                    if objects_to_delete:
+                        s3_client.delete_objects(
+                            Bucket=config.bucket_name,
+                            Delete={"Objects": objects_to_delete},
+                        )
+                        print(f"  ✓ Deleted {len(objects_to_delete)} files from Drime")
+            except Exception as e:
+                print(f"  ⚠ Error cleaning up Drime files: {e}")
+
     except Exception as e:
         error_msg = str(e)
         print(f"\n✗ Benchmark failed: {e}")
 
     finally:
-        # Cleanup S3 bucket
-        if s3_client and config.bucket_name:
-            try:
-                cleanup_s3_bucket(s3_client, config.bucket_name)
-            except Exception as e:
-                print(f"  ⚠ Error cleaning up bucket: {e}")
-
         # Stop server
         if server_process:
             stop_server(server_process)
@@ -287,14 +364,16 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             upload_time=upload_time,
             download_time=download_time,
             comparison_success=comparison_success,
-            backend_type="Local",
+            backend_type="Drime (Default Mode)",
             config_summary={
                 "Files": config.num_files,
                 "File size range": f"{format_bytes(config.min_file_size)} - "
                 f"{format_bytes(config.max_file_size)}",
                 "Subdirectories": config.num_subdirs,
                 "Server": f"{config.server_host}:{config.server_port}",
-                "Backend": "Local",
+                "Backend": "Drime",
+                "Workspace ID": config.workspace_id,
+                "Bucket Mode": "DEFAULT (virtual 'default' bucket)",
                 "Parallel mode": "Enabled" if config.parallel else "Disabled",
                 "Workers": config.parallel_workers if config.parallel else "N/A",
             },
@@ -315,7 +394,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Benchmark pys3local with boto3 S3 client",
+        description="Benchmark pys3local with Drime backend in DEFAULT MODE (virtual bucket)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -360,6 +439,12 @@ def main() -> int:
         default=5,
         help="Number of parallel workers",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show server output (useful for debugging)",
+    )
 
     args = parser.parse_args()
 
@@ -371,6 +456,7 @@ def main() -> int:
         server_port=args.port,
         parallel=args.parallel,
         parallel_workers=args.workers,
+        verbose=args.verbose,
     )
 
     result = run_benchmark(config)

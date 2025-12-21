@@ -124,6 +124,7 @@ def start_server(config: BenchmarkConfig, log_file: Path) -> subprocess.Popen:
         "--backend",
         "drime",
         "--no-auth",  # Disable auth for benchmark
+        "--allow-bucket-creation",  # Allow custom buckets for benchmark
     ]
 
     # Add debug flag if verbose mode enabled

@@ -12,6 +12,8 @@ designed to work seamlessly with backup tools like **rclone** and **duplicati**.
 ## Features
 
 - **S3-compatible API** - Works with standard S3 clients and backup tools
+- **Two bucket modes** - Default mode (virtual "default" bucket) or advanced mode
+  (custom buckets)
 - **Pluggable storage backends** - Support for local filesystem and cloud storage
   (Drime)
 - **AWS Signature V2/V4 authentication** - Full authentication support with presigned
@@ -68,6 +70,44 @@ pip install -e ".[dev,drime]"
 
 ## Quick Start
 
+### Bucket Modes
+
+pys3local supports two bucket modes:
+
+**1. Default Mode (Recommended for backup tools)**
+
+By default, pys3local uses a virtual "default" bucket. This simplifies backup tool
+configuration and mirrors the behavior of drime-s3 gateway.
+
+```bash
+# Start in default mode (only "default" bucket available)
+pys3local serve --path /tmp/s3store --no-auth
+
+# Use with rclone
+rclone lsd pys3local:              # Shows "default" bucket
+rclone copy /data pys3local:default/backup
+rclone ls pys3local:default/
+```
+
+**2. Advanced Mode (Custom buckets)**
+
+Enable custom bucket creation with the `--allow-bucket-creation` flag:
+
+```bash
+# Start in advanced mode (allows custom buckets)
+pys3local serve --path /srv/s3 --no-auth --allow-bucket-creation
+
+# Use with rclone
+rclone mkdir pys3local:mybucket
+rclone mkdir pys3local:another-bucket
+rclone copy /data pys3local:mybucket/backup
+```
+
+**Choosing a mode:**
+
+- Use **default mode** for simpler backup configurations (recommended)
+- Use **advanced mode** if you need multiple custom buckets
+
 ### Local Filesystem Backend
 
 Start a server with local filesystem storage:
@@ -102,11 +142,14 @@ pys3local serve --backend drime --no-auth
 The server will display the rclone configuration when it starts. Choose one of:
 
 ```bash
-# Option A: No authentication (easiest for testing)
+# Option A: No authentication, default mode (easiest for testing)
 pys3local serve --path /srv/s3 --no-auth
 
-# Option B: With authentication
+# Option B: With authentication, default mode
 pys3local serve --path /srv/s3 --access-key-id mykey --secret-access-key mysecret
+
+# Option C: Advanced mode with custom buckets
+pys3local serve --path /srv/s3 --no-auth --allow-bucket-creation
 ```
 
 **Step 2: Configure rclone**
@@ -136,14 +179,18 @@ region = us-east-1
 **Step 3: Use rclone**
 
 ```bash
-# List buckets
+# List buckets (shows "default" in default mode)
 rclone lsd pys3local:
 
-# Create bucket and upload
+# In default mode - use the "default" bucket
+rclone copy /data pys3local:default/backup
+rclone ls pys3local:default
+rclone sync /data pys3local:default/backup
+
+# In advanced mode - create and use custom buckets
 rclone mkdir pys3local:mybucket
 rclone copy /data pys3local:mybucket/backup
 rclone ls pys3local:mybucket
-rclone sync /data pys3local:mybucket/backup
 ```
 
 **Note:** When starting the server, pys3local will print the exact rclone configuration
@@ -214,16 +261,18 @@ Commands:
 pys3local serve --help
 
 Options:
-  --path TEXT                Data directory (default: /tmp/s3store)
-  --listen TEXT              Listen address (default: :10001)
-  --access-key-id TEXT       AWS access key ID (default: test)
-  --secret-access-key TEXT   AWS secret access key (default: test)
-  --region TEXT              AWS region (default: us-east-1)
-  --no-auth                  Disable authentication
-  --debug                    Enable debug logging
-  --backend [local|drime]    Storage backend (default: local)
-  --backend-config TEXT      Backend configuration name
-  --root-folder TEXT         Root folder for Drime backend (e.g., 'backups/s3')
+  --path TEXT                   Data directory (default: /tmp/s3store)
+  --listen TEXT                 Listen address (default: :10001)
+  --access-key-id TEXT          AWS access key ID (default: test)
+  --secret-access-key TEXT      AWS secret access key (default: test)
+  --region TEXT                 AWS region (default: us-east-1)
+  --no-auth                     Disable authentication
+  --debug                       Enable debug logging
+  --backend [local|drime]       Storage backend (default: local)
+  --backend-config TEXT         Backend configuration name
+  --root-folder TEXT            Root folder for Drime backend (e.g., 'backups/s3')
+  --allow-bucket-creation       Allow custom bucket creation (default: only 'default'
+                                bucket)
 ```
 
 ## Configuration Management
@@ -594,6 +643,66 @@ Signature V2 and V4.
 automatically detect which version the client is using and supports various
 authorization header formats from different S3 clients.
 
+### Bucket Mode Details
+
+pys3local offers two bucket modes to accommodate different use cases:
+
+#### Default Mode (Virtual "default" Bucket)
+
+In default mode, pys3local exposes only a virtual "default" bucket. This mode:
+
+- **Simplifies backup tool configuration** - No need to create buckets manually
+- **Mirrors drime-s3 gateway behavior** - Consistent with other S3 gateways
+- **Prevents bucket management complexity** - Focus on data, not bucket organization
+- **Creates "default" bucket automatically** - Ready to use immediately
+
+```bash
+# Start in default mode (default behavior)
+pys3local serve --path /srv/s3 --no-auth
+
+# ListBuckets always returns: ["default"]
+# PUT/GET operations must use "default" bucket
+rclone copy /data pys3local:default/myfiles
+```
+
+**Restrictions in default mode:**
+
+- `ListBuckets` returns only "default"
+- Operations on non-default buckets return `NoSuchBucket` error
+- `CreateBucket` for "default" succeeds silently (already exists)
+- `CreateBucket` for other buckets succeeds but doesn't create real buckets
+- `DeleteBucket` on "default" returns `BucketNotEmpty` error
+
+#### Advanced Mode (Custom Buckets)
+
+In advanced mode (with `--allow-bucket-creation`), you can create and manage multiple
+custom buckets:
+
+```bash
+# Start in advanced mode
+pys3local serve --path /srv/s3 --no-auth --allow-bucket-creation
+
+# Create multiple buckets
+rclone mkdir pys3local:documents
+rclone mkdir pys3local:photos
+rclone mkdir pys3local:backups
+
+# Use them independently
+rclone copy /docs pys3local:documents/
+rclone copy /pics pys3local:photos/
+```
+
+**Benefits of advanced mode:**
+
+- Full S3 bucket API compatibility
+- Multiple isolated storage namespaces
+- Traditional S3 bucket management
+
+**When to use each mode:**
+
+- **Default mode**: Backup tools (rclone, duplicati, restic), simple deployments
+- **Advanced mode**: Applications requiring multiple buckets, testing S3 clients
+
 ### Complete rclone Configuration Reference
 
 Here's a complete, working rclone configuration with all recommended options:
@@ -769,7 +878,18 @@ app = create_s3_app(
     access_key="mykey",
     secret_key="mysecret",
     region="us-east-1",
-    no_auth=False
+    no_auth=False,
+    allow_bucket_creation=False  # Default mode (only "default" bucket)
+)
+
+# Or enable advanced mode with custom buckets
+app = create_s3_app(
+    provider=provider,
+    access_key="mykey",
+    secret_key="mysecret",
+    region="us-east-1",
+    no_auth=False,
+    allow_bucket_creation=True  # Advanced mode (custom buckets allowed)
 )
 
 # Run with uvicorn

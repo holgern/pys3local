@@ -18,3 +18,6 @@ MAX_KEYS_LIMIT = 1000
 # Content types
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 XML_CONTENT_TYPE = "application/xml"
+
+# Default bucket (virtual bucket in default mode)
+DEFAULT_BUCKET = "default"

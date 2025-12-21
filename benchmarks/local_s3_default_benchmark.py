@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Benchmark script for pys3local with local backend and boto3 S3 client.
+"""Benchmark script for pys3local with local backend in DEFAULT MODE (virtual bucket).
+
+This script demonstrates the default bucket mode where only the 'default' bucket exists
+as a virtual bucket, and all files are stored at the root level without bucket directories.
 
 This script:
-1. Starts pys3local server in the background with local backend
+1. Starts pys3local server in DEFAULT MODE (no --allow-bucket-creation flag)
 2. Creates a directory with random test files
-3. Creates an S3 bucket
-4. Uploads all files to the bucket
+3. Uses the virtual 'default' bucket (auto-created)
+4. Uploads all files to the default bucket
 5. Downloads all files to a different directory
 6. Compares both directories
 7. Generates a performance report
@@ -34,9 +37,7 @@ try:
     from .benchmark_common import (
         BenchmarkResult,
         cleanup_local_dirs,
-        cleanup_s3_bucket,
         compare_directories,
-        create_s3_bucket,
         create_test_files,
         download_files_from_s3,
         download_files_from_s3_parallel,
@@ -53,9 +54,7 @@ except ImportError:
     from benchmark_common import (  # type: ignore[import-not-found]
         BenchmarkResult,
         cleanup_local_dirs,
-        cleanup_s3_bucket,
         compare_directories,
-        create_s3_bucket,
         create_test_files,
         download_files_from_s3,
         download_files_from_s3_parallel,
@@ -85,8 +84,8 @@ class BenchmarkConfig:
     access_key: str = "test"
     secret_key: str = "test"
 
-    # Bucket settings
-    bucket_name: str = "benchmark-bucket"
+    # Bucket settings (fixed to "default" for this benchmark)
+    bucket_name: str = "default"
 
     # Parallel settings
     parallel: bool = False
@@ -96,7 +95,7 @@ class BenchmarkConfig:
 def start_server(
     config: BenchmarkConfig, data_dir: Path, log_file: Path
 ) -> subprocess.Popen:
-    """Start pys3local server in the background.
+    """Start pys3local server in DEFAULT MODE (no custom buckets).
 
     Args:
         config: Benchmark configuration
@@ -106,7 +105,7 @@ def start_server(
     Returns:
         Process handle
     """
-    print_step("Starting pys3local server...")
+    print_step("Starting pys3local server in DEFAULT MODE...")
 
     listen_addr = f"{config.server_host}:{config.server_port}"
 
@@ -122,7 +121,7 @@ def start_server(
         "--path",
         str(data_dir),
         "--no-auth",  # Disable auth for benchmark
-        "--allow-bucket-creation",  # Allow custom buckets for benchmark
+        # NOTE: No --allow-bucket-creation flag = DEFAULT MODE
     ]
 
     # Prepare subprocess arguments based on platform
@@ -151,7 +150,8 @@ def start_server(
             print(f"Server failed to start. Log:\n{f.read()}")
         raise RuntimeError("Failed to start pys3local server")
 
-    print(f"  ✓ Server started (PID: {process.pid})")
+    print(f"  ✓ Server started in DEFAULT MODE (PID: {process.pid})")
+    print(f"  ✓ Using virtual 'default' bucket (no bucket directories)")
     return process
 
 
@@ -187,10 +187,10 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
     if config is None:
         config = BenchmarkConfig()
 
-    print_header("PYS3LOCAL + BOTO3 S3 BENCHMARK")
+    print_header("PYS3LOCAL DEFAULT MODE BENCHMARK (LOCAL BACKEND)")
 
     # Create temporary directories
-    temp_base = Path(tempfile.mkdtemp(prefix="pys3local_benchmark_"))
+    temp_base = Path(tempfile.mkdtemp(prefix="pys3local_default_benchmark_"))
     source_dir = temp_base / "source"
     download_dir = temp_base / "download"
     server_data_dir = temp_base / "server_data"
@@ -220,21 +220,18 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             config.num_subdirs,
         )
 
-        # Start server
+        # Start server in DEFAULT MODE
         server_process = start_server(config, server_data_dir, log_file)
 
         # Create S3 client
         s3_client = create_s3_client(config)
 
-        # Create bucket
-        success, bucket_create_time, error = create_s3_bucket(
-            s3_client, config.bucket_name
-        )
-        if not success:
-            error_msg = f"Bucket creation failed: {error}"
-            raise RuntimeError(error_msg)
+        # NOTE: We do NOT create a bucket - 'default' bucket is auto-created
+        print_step("Using virtual 'default' bucket (auto-created)...")
+        print(f"  ✓ 'default' bucket is virtual (no directory created)")
+        bucket_create_time = 0.0  # Instant, as it's virtual
 
-        # Upload files
+        # Upload files to 'default' bucket
         if config.parallel:
             success, upload_time, error = upload_files_to_s3_parallel(
                 s3_client, config.bucket_name, source_dir, config.parallel_workers
@@ -247,7 +244,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             error_msg = f"Upload failed: {error}"
             raise RuntimeError(error_msg)
 
-        # Download files
+        # Download files from 'default' bucket
         if config.parallel:
             success, download_time, error = download_files_from_s3_parallel(
                 s3_client, config.bucket_name, download_dir, config.parallel_workers
@@ -268,12 +265,8 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
         print(f"\n✗ Benchmark failed: {e}")
 
     finally:
-        # Cleanup S3 bucket
-        if s3_client and config.bucket_name:
-            try:
-                cleanup_s3_bucket(s3_client, config.bucket_name)
-            except Exception as e:
-                print(f"  ⚠ Error cleaning up bucket: {e}")
+        # NOTE: In default mode, we don't cleanup the bucket as it's virtual
+        # The bucket directory will be cleaned up with server_data_dir
 
         # Stop server
         if server_process:
@@ -287,7 +280,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
             upload_time=upload_time,
             download_time=download_time,
             comparison_success=comparison_success,
-            backend_type="Local",
+            backend_type="Local (Default Mode)",
             config_summary={
                 "Files": config.num_files,
                 "File size range": f"{format_bytes(config.min_file_size)} - "
@@ -295,6 +288,7 @@ def run_benchmark(config: BenchmarkConfig | None = None) -> BenchmarkResult:
                 "Subdirectories": config.num_subdirs,
                 "Server": f"{config.server_host}:{config.server_port}",
                 "Backend": "Local",
+                "Bucket Mode": "DEFAULT (virtual 'default' bucket)",
                 "Parallel mode": "Enabled" if config.parallel else "Disabled",
                 "Workers": config.parallel_workers if config.parallel else "N/A",
             },
@@ -315,7 +309,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Benchmark pys3local with boto3 S3 client",
+        description="Benchmark pys3local in DEFAULT MODE (virtual bucket)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

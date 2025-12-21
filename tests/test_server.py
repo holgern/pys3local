@@ -214,6 +214,7 @@ def test_create_s3_app(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     assert app is not None
@@ -237,6 +238,7 @@ def test_server_list_buckets(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -257,6 +259,7 @@ def test_server_create_bucket(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -280,6 +283,7 @@ def test_server_put_get_object(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -307,6 +311,7 @@ def test_server_delete_object(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -331,6 +336,7 @@ def test_server_head_object(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -355,6 +361,7 @@ def test_server_list_objects(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -381,6 +388,7 @@ def test_server_copy_object(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -409,6 +417,7 @@ def test_server_404_on_missing_object(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -427,6 +436,7 @@ def test_server_404_on_missing_bucket(tmp_path):
         secret_key="test",
         region="us-east-1",
         no_auth=True,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -453,6 +463,7 @@ def test_server_sigv2_authentication(tmp_path):
         secret_key=secret_key,
         region="us-east-1",
         no_auth=False,  # Authentication required
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -512,6 +523,7 @@ def test_server_sigv2_authentication_failure(tmp_path):
         secret_key=secret_key,
         region="us-east-1",
         no_auth=False,  # Authentication required
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -573,6 +585,7 @@ def test_server_sigv4_authentication(tmp_path):
         secret_key=secret_key,
         region=region,
         no_auth=False,  # Authentication required
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -674,6 +687,7 @@ def test_server_sigv4_authentication_with_spaces(tmp_path):
         secret_key=secret_key,
         region=region,
         no_auth=False,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -767,6 +781,7 @@ def test_server_sigv4_authentication_no_spaces_after_comma(tmp_path):
         secret_key=secret_key,
         region=region,
         no_auth=False,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)
@@ -857,6 +872,7 @@ def test_server_sigv4_authentication_failure(tmp_path):
         secret_key=secret_key,
         region=region,
         no_auth=False,
+        allow_bucket_creation=True,
     )
 
     client = TestClient(app)

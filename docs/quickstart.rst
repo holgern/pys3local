@@ -1,6 +1,35 @@
 Quick Start Guide
 =================
 
+Bucket Modes
+------------
+
+pys3local supports two bucket modes:
+
+**Default Mode (Recommended)**
+
+By default, pys3local uses a virtual "default" bucket. This simplifies backup tool
+configuration and mirrors the behavior of drime-s3 gateway.
+
+.. code-block:: bash
+
+   # Start in default mode (only "default" bucket available)
+   pys3local serve --no-auth --debug
+
+**Advanced Mode**
+
+Enable custom bucket creation with the ``--allow-bucket-creation`` flag:
+
+.. code-block:: bash
+
+   # Start in advanced mode (allows custom buckets)
+   pys3local serve --no-auth --debug --allow-bucket-creation
+
+**Choosing a mode:**
+
+- Use **default mode** for simpler backup configurations (recommended)
+- Use **advanced mode** if you need multiple custom buckets
+
 Test the Installation
 ----------------------
 
@@ -63,33 +92,36 @@ Or test manually:
    )
 
    # Create bucket
-   s3.create_bucket(Bucket='mybucket')
+   s3.create_bucket(Bucket='default')  # In default mode, use "default" bucket
 
    # Upload file
-   s3.put_object(Bucket='mybucket', Key='test.txt', Body=b'Hello!')
+   s3.put_object(Bucket='default', Key='test.txt', Body=b'Hello!')
 
    # List objects
-   print(s3.list_objects_v2(Bucket='mybucket'))
+   print(s3.list_objects_v2(Bucket='default'))
+
+**Note:** In default mode, always use "default" as the bucket name. In advanced mode
+(with ``--allow-bucket-creation``), you can create custom buckets like 'mybucket'.
 
 3. Test with curl
 ~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
-   # List buckets (should return XML)
+   # List buckets (shows "default" in default mode)
    curl http://localhost:10001/
 
-   # Create bucket
-   curl -X PUT http://localhost:10001/mybucket
+   # Create bucket (use "default" in default mode)
+   curl -X PUT http://localhost:10001/default
 
    # Upload object
-   echo "Hello, World!" | curl -X PUT http://localhost:10001/mybucket/hello.txt --data-binary @-
+   echo "Hello, World!" | curl -X PUT http://localhost:10001/default/hello.txt --data-binary @-
 
    # List objects in bucket
-   curl http://localhost:10001/mybucket
+   curl http://localhost:10001/default
 
    # Get object
-   curl http://localhost:10001/mybucket/hello.txt
+   curl http://localhost:10001/default/hello.txt
 
 4. Test with rclone
 ~~~~~~~~~~~~~~~~~~~
@@ -114,29 +146,44 @@ Test it:
 
 .. code-block:: bash
 
-   # List buckets
+   # List buckets (shows "default" in default mode)
    rclone lsd pys3local:
 
-   # Create bucket
-   rclone mkdir pys3local:rclone-test
+   # In default mode, use "default" bucket
+   rclone mkdir pys3local:default
 
    # Copy a file
    echo "test data" > /tmp/testfile.txt
-   rclone copy /tmp/testfile.txt pys3local:rclone-test/
+   rclone copy /tmp/testfile.txt pys3local:default/
 
    # List files
-   rclone ls pys3local:rclone-test/
+   rclone ls pys3local:default/
 
    # Download file
-   rclone copy pys3local:rclone-test/testfile.txt /tmp/downloaded.txt
+   rclone copy pys3local:default/testfile.txt /tmp/downloaded.txt
    cat /tmp/downloaded.txt
+
+**Advanced mode example:**
+
+If you started the server with ``--allow-bucket-creation``, you can create custom buckets:
+
+.. code-block:: bash
+
+   # Create custom bucket (only in advanced mode)
+   rclone mkdir pys3local:rclone-test
+
+   # Use it
+   rclone copy /tmp/testfile.txt pys3local:rclone-test/
+   rclone ls pys3local:rclone-test/
 
 Example: Backup with rclone
 ----------------------------
 
+**Default mode (recommended):**
+
 .. code-block:: bash
 
-   # Start server with persistent storage
+   # Start server with persistent storage (default mode)
    pys3local serve --path /srv/s3-backups --access-key-id mykey --secret-access-key mysecret
 
    # In another terminal, configure rclone with the credentials
@@ -149,6 +196,23 @@ Example: Backup with rclone
    endpoint = http://localhost:10001
    region = us-east-1
    EOF
+
+   # Use the "default" bucket - no need to create it
+   rclone sync ~/Documents backup:default/documents
+
+   # List backups
+   rclone tree backup:default
+
+   # Restore files
+   rclone sync backup:default/documents ~/Documents-restored
+
+**Advanced mode (custom buckets):**
+
+.. code-block:: bash
+
+   # Start server with custom bucket support
+   pys3local serve --path /srv/s3-backups --allow-bucket-creation \
+       --access-key-id mykey --secret-access-key mysecret
 
    # Create backup bucket
    rclone mkdir backup:daily-backups

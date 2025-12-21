@@ -15,7 +15,12 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
 from pys3local import auth, xml_templates
-from pys3local.constants import DEFAULT_REGION, MAX_KEYS_DEFAULT, XML_CONTENT_TYPE
+from pys3local.constants import (
+    DEFAULT_BUCKET,
+    DEFAULT_REGION,
+    MAX_KEYS_DEFAULT,
+    XML_CONTENT_TYPE,
+)
 from pys3local.errors import (
     AccessDenied,
     BucketNotEmpty,
@@ -43,6 +48,7 @@ def create_s3_app(
     secret_key: str = "test",
     region: str = DEFAULT_REGION,
     no_auth: bool = False,
+    allow_bucket_creation: bool = False,
 ) -> FastAPI:
     """Create FastAPI S3 application.
 
@@ -52,6 +58,8 @@ def create_s3_app(
         secret_key: AWS secret access key
         region: AWS region
         no_auth: Disable authentication
+        allow_bucket_creation: Allow creation of custom buckets
+            (default: only 'default' bucket)
 
     Returns:
         FastAPI application instance
@@ -67,6 +75,17 @@ def create_s3_app(
     app.state.secret_key = secret_key
     app.state.region = region
     app.state.no_auth = no_auth
+    app.state.allow_bucket_creation = allow_bucket_creation
+
+    # Ensure default bucket exists (needed for both modes)
+    # In default mode: it's a virtual bucket but we create it for provider compatibility
+    # In advanced mode: it's a real bucket that gets created
+    try:
+        if not provider.bucket_exists(DEFAULT_BUCKET):
+            provider.create_bucket(DEFAULT_BUCKET)
+            logger.info(f"Created '{DEFAULT_BUCKET}' bucket")
+    except Exception as e:
+        logger.warning(f"Could not create default bucket: {e}")
 
     # Add global exception handler for S3 errors
     @app.exception_handler(S3Error)
@@ -251,6 +270,80 @@ async def _verify_auth(request: Request) -> bool:
     return True
 
 
+def _validate_bucket_request(
+    request: Request, bucket_name: str | None, operation: str
+) -> None:
+    """Validate bucket name against server policy.
+
+    Args:
+        request: FastAPI request
+        bucket_name: Bucket name from request
+        operation: Operation type ("create", "access", "delete")
+
+    Raises:
+        NoSuchBucket: If bucket doesn't match policy
+    """
+    # If custom buckets are allowed, no validation needed
+    if request.app.state.allow_bucket_creation:
+        return
+
+    # Only allow "default" bucket in default mode
+    if bucket_name and bucket_name != DEFAULT_BUCKET:
+        if operation == "create":
+            # Silently succeed for bucket creation (S3 compatibility)
+            # This allows tools to try creating buckets without failing
+            logger.info(
+                f"Bucket creation requested for '{bucket_name}', "
+                f"but only '{DEFAULT_BUCKET}' is available "
+                f"(use --allow-bucket-creation to enable)"
+            )
+            return
+        elif operation == "delete":
+            # Allow deletion attempts of non-existent buckets to succeed
+            logger.debug(f"Ignoring deletion of non-existent bucket '{bucket_name}'")
+            return
+        else:
+            # For access operations, raise NoSuchBucket
+            raise NoSuchBucket(bucket_name)
+
+    # Block deletion of default bucket in default mode
+    if bucket_name == DEFAULT_BUCKET and operation == "delete":
+        if not request.app.state.allow_bucket_creation:
+            raise BucketNotEmpty(bucket_name)
+
+
+def _resolve_storage_path(
+    bucket_name: str | None, key: str | None, allow_bucket_creation: bool
+) -> tuple[str, str | None]:
+    """Resolve S3 path to storage backend path.
+
+    Args:
+        bucket_name: S3 bucket name
+        key: S3 object key
+        allow_bucket_creation: Whether bucket directories are real
+
+    Returns:
+        Tuple of (bucket_for_provider, key_for_provider)
+        - In default mode (virtual bucket): For "default" bucket,
+          use it as-is but files stored at root
+        - In advanced mode (real buckets): Returns (bucket_name, key)
+
+    Note: In default mode, we still pass "default" to the provider to
+    maintain compatibility, but the provider should treat it as a virtual
+    bucket (no directory creation).
+    """
+    if not bucket_name:
+        bucket_name = DEFAULT_BUCKET
+
+    if not key:
+        return bucket_name, None
+
+    # Both modes use bucket_name - the difference is in how providers handle it
+    # In default mode, providers should not create bucket directories
+    # In advanced mode, providers create actual bucket directories
+    return bucket_name, key
+
+
 async def _decode_chunked_stream(request: Request) -> tuple[bytes, str]:
     """Decode AWS chunked encoded stream.
 
@@ -337,7 +430,23 @@ def _setup_routes(app: FastAPI) -> None:
         provider: StorageProvider = request.app.state.provider
 
         try:
-            buckets = provider.list_buckets()
+            # In default mode (virtual bucket), always return only "default"
+            if not request.app.state.allow_bucket_creation:
+                # Return virtual "default" bucket
+                from datetime import datetime, timezone
+
+                from pys3local.models import Bucket
+
+                buckets = [
+                    Bucket(
+                        name=DEFAULT_BUCKET,
+                        creation_date=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                ]
+            else:
+                # In advanced mode, return actual buckets from provider
+                buckets = provider.list_buckets()
+
             xml = xml_templates.format_list_buckets_xml(buckets)
             return Response(content=xml, media_type=XML_CONTENT_TYPE)
         except S3Error as e:
@@ -363,6 +472,9 @@ def _setup_routes(app: FastAPI) -> None:
             # List buckets
             return await list_buckets(request)
 
+        # Validate bucket request
+        _validate_bucket_request(request, bucket_name, "access")
+
         query_params = dict(request.query_params)
 
         try:
@@ -373,8 +485,13 @@ def _setup_routes(app: FastAPI) -> None:
                 max_keys = int(query_params.get("max-keys", str(MAX_KEYS_DEFAULT)))
                 delimiter = query_params.get("delimiter", "")
 
+                # Resolve storage path (handle virtual bucket)
+                storage_bucket, _ = _resolve_storage_path(
+                    bucket_name, None, request.app.state.allow_bucket_creation
+                )
+
                 result = provider.list_objects(
-                    bucket_name, prefix, marker, max_keys, delimiter
+                    storage_bucket, prefix, marker, max_keys, delimiter
                 )
 
                 xml = xml_templates.format_list_objects_xml(
@@ -392,7 +509,16 @@ def _setup_routes(app: FastAPI) -> None:
                 return Response(content=xml, media_type=XML_CONTENT_TYPE)
 
             # Get object
-            obj = provider.get_object(bucket_name, key)
+            # Resolve storage path (handle virtual bucket)
+            storage_bucket, storage_key = _resolve_storage_path(
+                bucket_name, key, request.app.state.allow_bucket_creation
+            )
+
+            # storage_key should never be None here since key is not None
+            if storage_key is None:
+                raise NoSuchKey(key)
+
+            obj = provider.get_object(storage_bucket, storage_key)
 
             if obj.data is None:
                 raise NoSuchKey(key)
@@ -435,16 +561,39 @@ def _setup_routes(app: FastAPI) -> None:
         if not bucket_name:
             return Response(status_code=400)
 
+        # Validate bucket request
+        _validate_bucket_request(request, bucket_name, "access")
+
         try:
             if not key:
                 # Check bucket existence
-                if provider.bucket_exists(bucket_name):
+                # In default mode, "default" bucket always exists (virtual)
+                if (
+                    not request.app.state.allow_bucket_creation
+                    and bucket_name == DEFAULT_BUCKET
+                ):
+                    return Response(status_code=200)
+
+                # Resolve storage path
+                storage_bucket, _ = _resolve_storage_path(
+                    bucket_name, None, request.app.state.allow_bucket_creation
+                )
+
+                if provider.bucket_exists(storage_bucket):
                     return Response(status_code=200)
                 else:
                     return Response(status_code=404)
 
             # Check object
-            obj = provider.head_object(bucket_name, key)
+            # Resolve storage path
+            storage_bucket, storage_key = _resolve_storage_path(
+                bucket_name, key, request.app.state.allow_bucket_creation
+            )
+
+            if storage_key is None:
+                return Response(status_code=404)
+
+            obj = provider.head_object(storage_bucket, storage_key)
 
             headers = {
                 "ETag": f'"{obj.etag}"',
@@ -480,15 +629,44 @@ def _setup_routes(app: FastAPI) -> None:
         try:
             if not key:
                 # Create bucket
-                provider.create_bucket(bucket_name)
+                _validate_bucket_request(request, bucket_name, "create")
+
+                # Only create if it's the default bucket in default mode,
+                # or custom buckets are allowed
+                if request.app.state.allow_bucket_creation:
+                    # Advanced mode: actually create the bucket
+                    provider.create_bucket(bucket_name)
+                # In default mode, silently succeed (virtual bucket)
                 return Response(status_code=200)
+
+            # Validate bucket for object operations
+            _validate_bucket_request(request, bucket_name, "access")
+
+            # Resolve storage path
+            storage_bucket, storage_key = _resolve_storage_path(
+                bucket_name, key, request.app.state.allow_bucket_creation
+            )
+
+            if storage_key is None:
+                return Response(status_code=400)
 
             # Check for copy operation
             copy_source = request.headers.get("x-amz-copy-source")
             if copy_source:
                 # Copy object
                 src_bucket, _, src_key = copy_source.partition("/")
-                obj = provider.copy_object(src_bucket, src_key, bucket_name, key)
+
+                # Resolve source and destination paths
+                src_storage_bucket, src_storage_key = _resolve_storage_path(
+                    src_bucket, src_key, request.app.state.allow_bucket_creation
+                )
+
+                if src_storage_key is None:
+                    return Response(status_code=400)
+
+                obj = provider.copy_object(
+                    src_storage_bucket, src_storage_key, storage_bucket, storage_key
+                )
 
                 xml = xml_templates.format_copy_object_xml(
                     last_modified=obj.last_modified.isoformat() + "Z",
@@ -516,7 +694,7 @@ def _setup_routes(app: FastAPI) -> None:
             )
 
             obj = provider.put_object(
-                bucket_name, key, body, content_type, md5_hash=md5_hash
+                storage_bucket, storage_key, body, content_type, md5_hash=md5_hash
             )
 
             headers = {"ETag": f'"{obj.etag}"'}
@@ -548,19 +726,35 @@ def _setup_routes(app: FastAPI) -> None:
         try:
             if not key:
                 # Delete bucket
-                # For Drime provider, use force=True for fast recursive deletion
-                # Check if delete_bucket accepts force parameter
-                import inspect
+                # Validate - this will block deletion of "default" in default mode
+                _validate_bucket_request(request, bucket_name, "delete")
 
-                sig = inspect.signature(provider.delete_bucket)
-                if "force" in sig.parameters:
-                    provider.delete_bucket(bucket_name, force=True)  # type: ignore[call-arg]
-                else:
-                    provider.delete_bucket(bucket_name)
+                # Only delete if custom buckets are allowed
+                if request.app.state.allow_bucket_creation:
+                    # For Drime provider, use force=True for fast recursive deletion
+                    # Check if delete_bucket accepts force parameter
+                    import inspect
+
+                    sig = inspect.signature(provider.delete_bucket)
+                    if "force" in sig.parameters:
+                        provider.delete_bucket(bucket_name, force=True)  # type: ignore[call-arg]
+                    else:
+                        provider.delete_bucket(bucket_name)
+                # In default mode, silently succeed (virtual bucket can't be deleted)
                 return Response(status_code=204)
 
             # Delete object
-            provider.delete_object(bucket_name, key)
+            _validate_bucket_request(request, bucket_name, "access")
+
+            # Resolve storage path
+            storage_bucket, storage_key = _resolve_storage_path(
+                bucket_name, key, request.app.state.allow_bucket_creation
+            )
+
+            if storage_key is None:
+                return Response(status_code=400)
+
+            provider.delete_object(storage_bucket, storage_key)
             return Response(status_code=204)
 
         except BucketNotEmpty as e:
@@ -592,6 +786,14 @@ def _setup_routes(app: FastAPI) -> None:
         if "delete" in query_params:
             # Multi-delete
             try:
+                # Validate bucket
+                _validate_bucket_request(request, bucket_name, "access")
+
+                # Resolve storage path
+                storage_bucket, _ = _resolve_storage_path(
+                    bucket_name, None, request.app.state.allow_bucket_creation
+                )
+
                 body = await request.body()
                 root = ET.fromstring(body)
 
@@ -600,7 +802,7 @@ def _setup_routes(app: FastAPI) -> None:
                     if key_elem is not None and key_elem.text is not None:
                         keys.append(key_elem.text)
 
-                result = provider.delete_objects(bucket_name or "", keys)
+                result = provider.delete_objects(storage_bucket, keys)
 
                 xml = xml_templates.format_delete_objects_xml(
                     deleted=result["deleted"],
